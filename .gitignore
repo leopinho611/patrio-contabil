@@ -1,0 +1,12 @@
+__pycache__/
+.pytest_cache/
+.venv/
+# Nunca versionar dados de clientes
+*.zip
+*.ofx
+*.pdf
+*.csv
+*.xlsx
+*.xls
+*.excel
+dados/
