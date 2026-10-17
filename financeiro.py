@@ -82,13 +82,11 @@ PALAVRAS_FATURA = ["pagto cartao", "pagamento de fatura", "pagamento fatura",
 PADRAO_TRANSFERENCIA = re.compile(r"\b(?:pix|ted|doc|transf|transferencia)")
 
 # Linhas de saldo não são transações (aparecem em quase todo extrato brasileiro;
-# o BB escreve "S A L D O", por isso a comparação também é feita sem espaços)
-PADRAO_SALDO = re.compile(r"\bsaldo\b")
-
-
+# o BB escreve "S A L D O", por isso a comparação também é feita sem espaços).
+# Só no começo: "Cobrança de I.O.F. - IOF Saldo Devedor Conta" é lançamento de verdade.
 def eh_linha_de_saldo(descricao):
     texto = normalizar(descricao)
-    return bool(PADRAO_SALDO.search(texto)) or texto.replace(" ", "").startswith("saldo")
+    return texto.replace(" ", "").startswith("saldo")
 
 
 def normalizar(texto):

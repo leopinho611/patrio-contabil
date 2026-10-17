@@ -81,6 +81,25 @@ def conta_do_ofx(conteudo, conta):
     return f"{conta} Ag {agencia} Cc {numero}" if agencia else f"{conta} Cc {numero}"
 
 
+def conta_do_arquivo(nome, conteudo, conta):
+    """Completa o nome da conta com o número, quando o arquivo traz.
+
+    OFX: agência e conta (cartão: final). Fatura em PDF: "Final 1234".
+    Nubank: o número da conta vem no nome do arquivo (NU_12345678_...).
+    """
+    if b"<OFX>" in conteudo[:4000].upper() or nome.lower().endswith(".ofx"):
+        return conta_do_ofx(conteudo, conta)
+    if conteudo[:4] == b"%PDF" and "Cartão" in conta:
+        from pypdf import PdfReader
+        texto = PdfReader(io.BytesIO(conteudo)).pages[0].extract_text() or ""
+        m = re.search(r"\bFinal\s+(\d{4})\b", texto, re.IGNORECASE)
+        return f"{conta} final {m.group(1)}" if m else conta
+    m = re.match(r"NU_(\d+)_", nome.rsplit(" › ", 1)[-1], re.IGNORECASE)
+    if m and conta.startswith("Nubank"):
+        return f"{conta} {m.group(1)}"
+    return conta
+
+
 def importar(arquivos, colunas_por_layout=None):
     """Lê todos os arquivos e devolve (base, leitura, layouts).
 
@@ -105,8 +124,7 @@ def importar(arquivos, colunas_por_layout=None):
             continue
         if r["tipo"] == "transacoes":
             t = r["dados"].copy()
-            if b"<OFX>" in conteudo[:4000].upper() or nome.lower().endswith(".ofx"):
-                t["Conta"] = conta_do_ofx(conteudo, r["conta"])
+            t["Conta"] = conta_do_arquivo(nome, conteudo, r["conta"])
             t["Arquivo"] = nome
             tabelas.append(t)
             leitura.append({"Arquivo": nome, "Banco/Conta": t["Conta"].iat[0] if len(t) else r["conta"],
@@ -120,14 +138,15 @@ def importar(arquivos, colunas_por_layout=None):
                          "arquivos": [n for n, _ in grupo]}
         for nome, r in grupo:
             try:
-                t = montar_transacoes(r["bruto"], colunas, r["conta"])
+                t = montar_transacoes(r["bruto"], colunas,
+                                      conta_do_arquivo(nome, b"", r["conta"]))
             except ValueError as e:
                 leitura.append({"Arquivo": nome, "Banco/Conta": r["conta"],
                                 "Situação": f"colunas não identificadas: {e}"})
                 continue
             t["Arquivo"] = nome
             tabelas.append(t)
-            leitura.append({"Arquivo": nome, "Banco/Conta": r["conta"],
+            leitura.append({"Arquivo": nome, "Banco/Conta": conta_do_arquivo(nome, b"", r["conta"]),
                             "Situação": f"{len(t)} lançamentos"})
 
     base = planilha_base(consolidar(tabelas))

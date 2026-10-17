@@ -63,3 +63,17 @@ def test_excel_tem_data_e_numero():
     assert [c.value for c in aba[1]][:7] == COLUNAS_BASE
     assert aba["D2"].value == -150.0
     assert aba["B2"].number_format == "DD/MM/YYYY"
+
+
+def test_iof_sobre_saldo_devedor_nao_e_linha_de_saldo():
+    excel = ("Data;Lançamento;Detalhes;Valor\n20/08/2026;Saldo Anterior;;0,00\n"
+             "01/09/2026;Cobrança de I.O.F.;IOF Saldo Devedor Conta;-0,18\n"
+             "01/09/2026;Saldo do dia;;0,00\n30/09/2026;S A L D O;;0,00\n").encode()
+    base, _, _ = importar([("extrato.csv", excel)])
+    assert list(base["Valor"]) == [-0.18]
+
+
+def test_numero_da_conta_nubank_vem_do_nome_do_arquivo():
+    csv = b"Data,Valor,Identificador,Descri\xc3\xa7\xc3\xa3o\n02/09/2026,-10.00,x,Pix\n"
+    base, _, _ = importar([("NU_31098633_01SET2026_30SET2026.csv", csv)])
+    assert base["Banco/Conta"].iat[0] == "Nubank 31098633"
