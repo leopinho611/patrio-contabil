@@ -16,6 +16,8 @@ from leitores_pdf import (
     ler_fatura_bradesco,
     ler_fatura_itau,
     ler_pdf_de_banco,
+    eh_resumo_invest_facil,
+    ler_resumo_invest_facil,
 )
 
 # Textos no formato que o pypdf extrai (os extratos de conta em modo layout).
@@ -181,15 +183,63 @@ def test_extrato_santander():
     assert list(t["Valor"]) == [-1.0, 1.0]
 
 
-def test_caixa_sem_lancamento_nao_e_erro():
+def test_cdb_contamax_do_santander():
+    texto = SANTANDER + (" 12/JAN/2626/NOV/25 260039779500    0,00      1,00       1,00          "
+                         "0,00        0,00    0,00      1,00\n")
+    t = ler_extrato_santander(texto)
+    cdb = t[t["Conta"] == "Santander CDB ContaMax Ag 4543 Cc 13.010292-4"]
+    assert list(cdb["Descrição"]) == ["Resgate"]
+    assert list(cdb["Valor"]) == [-1.0]
+    assert cdb["Data"].iat[0] == pd.Timestamp("2026-01-12")
+
+
+def test_caixa_sem_movimento_entra_com_valor_zero():
     texto = ("EMPRESA TESTE\nAgência: 01585 Conta: 000578207806-1\n"
+             "Saldo anterior ao período solicitado R$ 350,95 C\n"
+             "Extrato no período de 01/01/2026 à 31/01/2026\n"
              "NÃO CONSTA LANÇAMENTO NESTE PERIODO\nSAC CAIXA\n")
-    with pytest.raises(SemLancamentos) as e:
-        ler_pdf_de_banco(texto, b"")
-    assert e.value.conta == "Caixa Ag 01585 Cc 000578207806-1"
+    t = ler_pdf_de_banco(texto, b"")
+    assert t["Conta"].iat[0] == "Caixa Ag 01585 Cc 000578207806-1"
+    assert t["Data"].iat[0] == pd.Timestamp("2026-01-31")
+    assert t["Valor"].iat[0] == 0
+    assert "350,95 C" in t["Descrição"].iat[0]
 
 
-def test_resumo_de_aplicacao_bradesco_nao_e_erro():
-    texto = "Investimentos Bradesco\nModalidade Valor Principal (R$)\nINVEST FAC 1,00\n"
+INVEST_FACIL = """\
+                   Conta:     2821 | 235560 - 4
+              Período de:     01/01/2026 até 31/01/2026
+ Modalidade                    Total Aplicado (R$)              Valor Principal (R$)              Resgate Bruto (R$)                Resgate Líquido (R$)
+ INVEST FAC                               111.027,89                       104.124,39                        104.130,45                          104.125,35
+      Renda Bruta (R$):      6,06                                IOF*:    4,92                             IR (R$):    0,18
+"""
+
+
+def test_resumo_invest_facil_vira_conta_de_aplicacao():
+    assert eh_resumo_invest_facil("Investimentos Bradesco\nTotal Aplicado (R$)")
+    t = ler_resumo_invest_facil(INVEST_FACIL)
+    assert t["Conta"].iat[0] == "Bradesco Invest Fácil Ag 2821 Cc 235560-4"
+    assert dict(zip(t["Descrição"], t["Valor"])) == {
+        "Aplicação": 111027.89, "Rendimento bruto": 6.06, "IOF retido": -4.92,
+        "IR retido": -0.18, "Resgate": -104125.35}
+    assert t["Valor"].sum() == pytest.approx(7385.57 - 482.07)  # saldo de principal
+
+
+def test_saldos_mensais_do_invest_facil_nao_e_erro():
+    texto = "Modalidade: Invest Fácil - Em CCDI\nMês Valor Principal (R$)\nJaneiro 7.385,57\n"
     with pytest.raises(SemLancamentos):
         ler_pdf_de_banco(texto, b"")
+
+
+def test_aplicacoes_automaticas_do_itau():
+    texto = ITAU.replace("05/01                 Não é lançamento", "") + """
+movimentação - aplicações/resgates antecipados e vencimentos
+                          aplicações            valor principal                rendimento                       IOF                 IRRF              rendimento          saldo de principal
+data                   realizadas R$           resgat./venc. R$             bruto pago R$               retido R$             retido R$          líquido pago R$                  aplicado R$
+02/01                        1.558,53                         0,00                       0,00                  0,00                  0,00                       0,00                  6.924,15
+05/01                             0,00                   5.365,62                        0,17                  0,13                  0,00                       0,04                  1.558,53
+total                        1.558,53                   5.365,62                        0,17                  0,13                  0,00                       0,04
+"""
+    t = ler_extrato_itau(texto)
+    aplic = t[t["Conta"] == "Itaú Aplic Aut Mais Ag 6530 Cc 40212-9"]
+    assert list(aplic["Descrição"]) == ["Aplicação", "Rendimento bruto", "IOF retido", "Resgate"]
+    assert list(aplic["Valor"]) == [1558.53, 0.17, -0.13, -5365.66]

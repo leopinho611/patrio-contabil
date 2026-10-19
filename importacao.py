@@ -128,11 +128,16 @@ def importar(arquivos, colunas_por_layout=None):
             continue
         if r["tipo"] == "transacoes":
             t = r["dados"].copy()
-            t["Conta"] = conta_do_arquivo(nome, conteudo, r["conta"])
+            # Um PDF pode trazer mais de uma conta (conta corrente e aplicação)
+            contas = {c: conta_do_arquivo(nome, conteudo, c) for c in t["Conta"].unique()}
+            t["Conta"] = t["Conta"].map(contas) if contas else r["conta"]
             t["Arquivo"] = nome
             tabelas.append(t)
-            leitura.append({"Arquivo": nome, "Banco/Conta": t["Conta"].iat[0] if len(t) else r["conta"],
-                            "Situação": f"{len(t)} lançamentos"})
+            situacao = ", ".join(f"{c}: {n}" for c, n in t["Conta"].value_counts(sort=False).items())
+            leitura.append({"Arquivo": nome,
+                            "Banco/Conta": " + ".join(t["Conta"].unique()) or r["conta"],
+                            "Situação": f"{len(t)} lançamentos"
+                                        + (f" ({situacao})" if len(contas) > 1 else "")})
         else:
             grupos.setdefault(tuple(r["bruto"].columns), []).append((nome, r))
 

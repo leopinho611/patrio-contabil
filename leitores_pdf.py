@@ -17,7 +17,8 @@ import re
 import pandas as pd
 from pypdf import PdfReader
 
-from financeiro import CATEGORIA_ESTORNO, converter_valor, montar_transacoes, normalizar
+from financeiro import (CATEGORIA_ESTORNO, CATEGORIA_PADRAO, converter_valor, montar_transacoes,
+                        normalizar)
 
 VALOR = r"-?[\d.]+,\d{2}-?"
 _VALOR = re.compile(rf"(?<![\w.,]){VALOR}(?![\w,])")
@@ -36,7 +37,8 @@ class SemLancamentos(Exception):
 
 def texto_em_layout(conteudo):
     paginas = PdfReader(io.BytesIO(conteudo)).pages
-    return "\n".join(p.extract_text(extraction_mode="layout") or "" for p in paginas)
+    texto = "\n".join(p.extract_text(extraction_mode="layout") or "" for p in paginas)
+    return texto.replace("\xa0", " ")
 
 
 def _tabela(lancamentos, conta, cartao=False):
@@ -59,6 +61,29 @@ def _data(dia, mes, ano_ref, mes_ref):
 
 def _limpa(texto):
     return re.sub(r"\s+", " ", texto).strip()
+
+
+def _sem_movimento(conta, data, descricao):
+    """Uma linha de valor zero, para a conta aparecer na planilha mesmo sem lançamentos."""
+    return pd.DataFrame([{"Data": data, "Descrição": descricao, "Valor": 0.0,
+                          "Categoria": CATEGORIA_PADRAO, "Tipo": "Entrada", "Fornecedor": "",
+                          "Conta": conta, "Mês": data.strftime("%Y-%m")}])
+
+
+def _movimento_aplicacao(data, aplicado=0.0, rendimento=0.0, iof=0.0, ir=0.0, resgate=0.0):
+    """Lançamentos da conta de aplicação, do ponto de vista da aplicação.
+
+    Entra (+) o que foi aplicado e o rendimento bruto; sai (-) o IOF e o IR retidos e o
+    resgate líquido que voltou para a conta corrente (principal + rendimento líquido).
+    """
+    partes = [("Aplicação", aplicado), ("Rendimento bruto", rendimento), ("IOF retido", -iof),
+              ("IR retido", -ir), ("Resgate", -resgate)]
+    return [{"Data": data, "Descrição": d, "Valor": round(v, 2)} for d, v in partes if v]
+
+
+def _juntar(*tabelas):
+    tabelas = [t for t in tabelas if t is not None and not t.empty]
+    return pd.concat(tabelas, ignore_index=True) if len(tabelas) > 1 else tabelas[0]
 
 
 # ============================================================================
@@ -232,7 +257,28 @@ def ler_extrato_itau(texto):
         # O primeiro valor é o lançamento (saída termina com "-"); o segundo, o saldo
         lancamentos.append({"Data": data, "Descrição": descricao,
                             "Valor": converter_valor(valores[0].group())})
-    return _tabela(lancamentos, conta)
+    return _juntar(_tabela(lancamentos, conta), _aplicacoes_itau(texto, conta, ano_ref, mes_ref))
+
+
+def _aplicacoes_itau(texto, conta, ano_ref, mes_ref):
+    """Tabela "movimentação - aplicações/resgates" das aplicações automáticas."""
+    inicio = texto.find("movimentação - aplicações/resgates")
+    if inicio < 0:
+        return None
+    lancamentos = []
+    for linha in texto[inicio:].splitlines():
+        if linha.strip().startswith("total"):
+            break
+        m = re.match(r"\s*(\d{2})/(\d{2})\s+((?:[\d.]+,\d{2}\s*){6,7})$", linha)
+        if not m:
+            continue
+        # aplicações, principal resgatado, rendimento bruto, IOF, IRRF, rendimento líquido
+        aplicado, principal, bruto, iof, ir, liquido = map(converter_valor, m.group(3).split()[:6])
+        lancamentos += _movimento_aplicacao(_data(m.group(1), m.group(2), ano_ref, mes_ref),
+                                            aplicado, bruto, iof, ir, principal + liquido)
+    if not lancamentos:
+        return None
+    return _tabela(lancamentos, conta.replace("Itaú", "Itaú Aplic Aut Mais", 1))
 
 
 # ============================================================================
@@ -303,26 +349,88 @@ def ler_extrato_santander(texto):
             continue
         lancamentos.append({"Data": data, "Descrição": descricao,
                             "Valor": converter_valor(m.group(4))})
-    return _tabela(lancamentos, conta)
+    return _juntar(_tabela(lancamentos, conta), _aplicacoes_santander(texto, conta))
+
+
+_MOV_SANTANDER = re.compile(r"^\s*(\d{2})/([A-Z]{3})/(\d{2})\s*\d{2}/[A-Z]{3}/\d{2}\s+\d+\s+"
+                            r"((?:[\d.]+,\d{2}\s*){7})$")
+
+
+def _aplicacoes_santander(texto, conta):
+    """Movimentação mensal do CDB ContaMax (resgate automático)."""
+    lancamentos = []
+    for linha in texto.splitlines():
+        m = _MOV_SANTANDER.match(linha)
+        if m:
+            # aplicações, principal resgatado, resgate bruto, rendimento, IOF, IR, líquido
+            aplicado, _principal, _bruto, rend, iof, ir, liquido = map(converter_valor,
+                                                                       m.group(4).split())
+            data = pd.Timestamp(2000 + int(m.group(3)), _MESES[m.group(2).lower()],
+                                int(m.group(1)))
+            lancamentos += _movimento_aplicacao(data, aplicado, rend, iof, ir, liquido)
+    if not lancamentos:
+        return None
+    return _tabela(lancamentos, conta.replace("Santander", "Santander CDB ContaMax", 1))
 
 
 # ============================================================================
 # PDFs sem lançamentos
 # ============================================================================
+def eh_extrato_caixa_sem_movimento(texto):
+    return "NÃO CONSTA LANÇAMENTO" in texto.upper() and "CAIXA" in texto.upper()
+
+
+def ler_extrato_caixa_sem_movimento(texto):
+    c = re.search(r"Agência:\s*(\d+)\s+Conta:\s*([\d-]+)", texto)
+    conta = f"Caixa Ag {c.group(1)} Cc {c.group(2)}" if c else "Caixa"
+    fim = re.search(r"período de \d{2}/\d{2}/\d{4} à (\d{2}/\d{2}/\d{4})", texto)
+    if not fim:
+        raise SemLancamentos(conta, "extrato sem lançamentos no período")
+    saldo = re.search(r"Saldo anterior[^\n]*?R\$\s*([\d.]+,\d{2}\s*[CD]?)", texto)
+    descricao = "Sem lançamentos no período"
+    if saldo:
+        descricao += f" (saldo R$ {saldo.group(1).strip()})"
+    return _sem_movimento(conta, pd.to_datetime(fim.group(1), format="%d/%m/%Y"), descricao)
+
+
+def eh_resumo_invest_facil(texto):
+    return "Investimentos Bradesco" in texto and "Total Aplicado" in texto
+
+
+def ler_resumo_invest_facil(texto):
+    """Resumo do mês do Invest Fácil: entra numa linha por item, no último dia do período."""
+    c = re.search(r"Conta:\s*(\d+)\s*\|\s*(\d+)\s*-\s*(\d)", texto)
+    conta = f"Bradesco Invest Fácil Ag {c.group(1)} Cc {c.group(2)}-{c.group(3)}" if c \
+        else "Bradesco Invest Fácil"
+    fim = re.search(r"\d{2}/\d{2}/\d{4} até (\d{2}/\d{2}/\d{4})", texto)
+    linha = re.search(rf"INVEST FAC\s+({VALOR})\s+({VALOR})\s+({VALOR})\s+({VALOR})", texto)
+    if not fim or not linha:
+        raise ValueError("resumo do Invest Fácil sem período ou sem valores.")
+
+    def campo(rotulo):
+        m = re.search(rf"{rotulo}\s*({VALOR})", texto)
+        return converter_valor(m.group(1)) if m else 0.0
+
+    aplicado, _principal, _bruto, liquido = (converter_valor(v) for v in linha.groups())
+    data = pd.to_datetime(fim.group(1), format="%d/%m/%Y")
+    lancamentos = _movimento_aplicacao(data, aplicado, campo(r"Renda Bruta \(R\$\):"),
+                                       campo(r"IOF\*:"), campo(r"IR \(R\$\):"), liquido)
+    return _tabela(lancamentos, conta)
+
+
 def sem_lancamentos(texto):
     """(conta, motivo) quando o PDF é reconhecido mas não tem o que importar."""
-    if "NÃO CONSTA LANÇAMENTO" in texto.upper() and "CAIXA" in texto.upper():
-        c = re.search(r"Agência:\s*(\d+)\s+Conta:\s*([\d-]+)", texto)
-        conta = f"Caixa Ag {c.group(1)} Cc {c.group(2)}" if c else "Caixa"
-        return conta, "extrato sem lançamentos no período"
     if re.search(r"Invest Fácil|INVEST FAC", texto) and "Valor Principal" in texto \
-            and "Lançamento" not in texto:
-        return "Bradesco Invest Fácil", ("resumo da aplicação, sem lançamentos (as aplicações e "
-                                         "resgates já estão no extrato da conta)")
+            and "Lançamento" not in texto and "Total Aplicado" not in texto:
+        return "Bradesco Invest Fácil", ("só saldos mensais da aplicação; as aplicações, resgates "
+                                         "e rendimentos vêm do resumo do período (Investimentos "
+                                         "Bradesco)")
     return None
 
 
 LEITORES = [
+    (eh_extrato_caixa_sem_movimento, ler_extrato_caixa_sem_movimento, False),
+    (eh_resumo_invest_facil, ler_resumo_invest_facil, True),
     (eh_extrato_bb, ler_extrato_bb, True),
     (eh_extrato_bradesco, ler_extrato_bradesco, True),
     (eh_fatura_bradesco, ler_fatura_bradesco, False),
@@ -337,6 +445,7 @@ def ler_pdf_de_banco(texto, conteudo):
 
     texto: o texto simples do pypdf (usado para reconhecer o banco).
     """
+    texto = texto.replace("\xa0", " ")
     vazio = sem_lancamentos(texto)
     if vazio:
         raise SemLancamentos(*vazio)
