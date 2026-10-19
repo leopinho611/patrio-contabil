@@ -20,6 +20,7 @@ from financeiro import (
     expandir_zip,
     montar_transacoes,
 )
+from leitores_pdf import SemLancamentos
 
 COLUNAS_BASE = ["Banco/Conta", "Data", "Descrição", "Valor", "Débito", "Crédito", "Histórico"]
 PROFUNDIDADE_ZIP = 3
@@ -89,7 +90,7 @@ def conta_do_arquivo(nome, conteudo, conta):
     """
     if b"<OFX>" in conteudo[:4000].upper() or nome.lower().endswith(".ofx"):
         return conta_do_ofx(conteudo, conta)
-    if conteudo[:4] == b"%PDF" and "Cartão" in conta:
+    if conteudo[:4] == b"%PDF" and "Cartão" in conta and "final" not in conta:
         from pypdf import PdfReader
         texto = PdfReader(io.BytesIO(conteudo)).pages[0].extract_text() or ""
         m = re.search(r"\bFinal\s+(\d{4})\b", texto, re.IGNORECASE)
@@ -119,6 +120,9 @@ def importar(arquivos, colunas_por_layout=None):
     for nome, conteudo in soltos:
         try:
             r = carregar_arquivo(nome.rsplit(" › ", 1)[-1], conteudo)
+        except SemLancamentos as e:
+            leitura.append({"Arquivo": nome, "Banco/Conta": e.conta, "Situação": str(e)})
+            continue
         except Exception as e:
             leitura.append({"Arquivo": nome, "Banco/Conta": "—", "Situação": f"ignorado: {e}"})
             continue
