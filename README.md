@@ -5,11 +5,22 @@ colunas **Banco/Conta, Data, Descrição, Valor, Débito, Crédito, Histórico**
 classificar e importar no Domínio.
 
 Lê arquivos soltos ou compactados (`.zip`, inclusive zip dentro de zip): OFX de qualquer banco,
-CSV/Excel de qualquer banco (identifica as colunas sozinho, ajustável na tela), extrato Nubank
-em PDF e fatura do cartão BB em PDF. O mesmo período enviado duas vezes, ou em formatos
-diferentes, não duplica. Valor positivo é entrada, negativo é saída.
+CSV/Excel de qualquer banco (identifica as colunas sozinho, ajustável na tela) e PDF:
 
-A leitura (`financeiro.py`, `regras.py`) veio do app Contas em Dia (sistema-financeiro-pj).
+- extrato de conta: BB, Bradesco (Net Empresa), Itaú (extrato mensal), Santander (consolidado
+  inteligente) e Nubank;
+- fatura de cartão: BB, Bradesco empresarial e Itaú empresas.
+
+Aplicações viram contas próprias na planilha (aplicação e rendimento bruto entram; IOF, IR e
+resgate líquido saem): aplicação automática do Itaú, CDB ContaMax do Santander e o resumo do
+período do Invest Fácil do Bradesco. Extrato da Caixa sem movimento entra como uma linha de
+valor zero com o saldo, para a conta aparecer. PDF sem texto (imagem, ou impresso pelo navegador com o texto em curvas, como o
+BNB) não é lido: peça o OFX ou o Excel. O mesmo período enviado duas vezes, ou em formatos
+diferentes, não duplica. Valor positivo é entrada, negativo é saída. Na fatura, a compra
+parcelada entra na data de vencimento e as demais na data da compra.
+
+A leitura (`financeiro.py`, `regras.py`) veio do app Contas em Dia (sistema-financeiro-pj); os
+PDFs dos outros bancos estão em `leitores_pdf.py`.
 
 ## Uso
 

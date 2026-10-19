@@ -377,7 +377,7 @@ def montar_transacoes(df, colunas, conta=""):
     t["Fornecedor"] = t["Descrição"].map(extrair_fornecedor)
     t["Conta"] = conta
     t["Mês"] = t["Data"].dt.to_period("M").astype(str)
-    return t.sort_values("Data").reset_index(drop=True)
+    return t.sort_values("Data", kind="stable").reset_index(drop=True)
 
 
 def coluna_pct(tipo):
@@ -1090,8 +1090,16 @@ def carregar_arquivo(nome, conteudo):
         if eh_extrato_nubank(texto):
             return {"tipo": "transacoes", "dados": ler_extrato_nubank_pdf(texto),
                     "conta": "Nubank"}
-        raise ValueError("PDF não reconhecido (são lidos a fatura do cartão BB e o extrato da "
-                         "conta Nubank); envie o extrato em CSV, Excel ou OFX.")
+        from leitores_pdf import ler_pdf_de_banco
+        dados = ler_pdf_de_banco(texto, conteudo)
+        if dados is not None:
+            return {"tipo": "transacoes", "dados": dados, "conta": dados["Conta"].iat[0]}
+        if len(texto.strip()) < 20:
+            raise ValueError("PDF sem texto (é imagem, ou foi impresso com o texto virado "
+                             "desenho); envie o extrato em OFX, Excel ou o PDF gerado pelo banco.")
+        raise ValueError("PDF não reconhecido (são lidos extratos de BB, Bradesco, Itaú e "
+                         "Santander, faturas de BB, Bradesco e Itaú e o extrato Nubank); "
+                         "envie o extrato em CSV, Excel ou OFX.")
     bruto = ler_extrato(nome, conteudo)
     return {"tipo": "tabela", "bruto": bruto, "conta": identificar_conta(nome, bruto.columns)}
 
