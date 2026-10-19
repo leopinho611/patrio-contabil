@@ -185,7 +185,7 @@ def para_excel(base):
     with pd.ExcelWriter(saida, engine="openpyxl") as w:
         base.to_excel(w, index=False, sheet_name="Base")
         aba = w.sheets["Base"]
-        larguras = {"A": 28, "B": 12, "C": 60, "D": 14, "E": 12, "F": 12, "G": 40, "H": 40}
+        larguras = {"A": 28, "B": 12, "C": 60, "D": 14, "E": 12, "F": 12, "G": 60, "H": 40, "I": 45, "J": 45}
         for col, largura in larguras.items():
             aba.column_dimensions[col].width = largura
         for (celula,) in aba.iter_rows(min_row=2, min_col=2, max_col=2):
