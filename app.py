@@ -12,10 +12,11 @@ import streamlit as st
 # Depois de uma atualização, o Streamlit Cloud recarrega este arquivo mas mantém na
 # memória a versão antiga dos outros módulos (a leitura continua a de antes até alguém
 # reiniciar o app). Recarregá-los aqui evita isso.
-for _modulo in ("financeiro", "leitores_pdf", "importacao"):   # nessa ordem
+for _modulo in ("financeiro", "leitores_pdf", "importacao", "classificacao"):   # nessa ordem
     if _modulo in sys.modules:
         importlib.reload(sys.modules[_modulo])
 
+from classificacao import classificar, ler_matriz
 from importacao import COLUNAS_BASE, importar, para_excel
 
 st.set_page_config(page_title="Patrio · Planilha base", layout="wide")
@@ -66,11 +67,28 @@ st.dataframe(contas, width="stretch",
              column_config={"Entradas": st.column_config.NumberColumn(format="R$ %.2f"),
                             "Saídas": st.column_config.NumberColumn(format="R$ %.2f")})
 
+with st.expander("Lançamentos contábeis (débito, crédito e histórico)"):
+    st.caption("Saída do banco: débito no fornecedor, crédito no banco. Entrada: débito no banco, "
+               "crédito no cliente. A conta do fornecedor ou cliente vem da planilha matriz.")
+    matriz_enviada = st.file_uploader("Planilha matriz", type=["xlsx", "xls"], key="matriz")
+    codigos = st.session_state.setdefault("codigos", {})
+    tabela = pd.DataFrame({"Banco/Conta": contas.index,
+                           "Código": [codigos.get(c, "") for c in contas.index]})
+    tabela = st.data_editor(tabela, hide_index=True, disabled=["Banco/Conta"], key="tab_codigos",
+                            column_config={"Código": st.column_config.TextColumn()})
+    codigos.update({c: str(v or "").strip() for c, v in zip(tabela["Banco/Conta"], tabela["Código"])})
+    if matriz_enviada:
+        base = classificar(base, ler_matriz(matriz_enviada), codigos)
+        prontos = ((base["Débito"] != "") & (base["Crédito"] != "")).sum()
+        st.write(f"{prontos} de {len(base)} lançamentos com débito e crédito. "
+                 "O motivo dos outros está na coluna Conferir.")
+
 filtro = st.multiselect("Contas", list(contas.index), default=list(contas.index))
 vista = base[base["Banco/Conta"].isin(filtro)]
+extras = [c for c in ("Conta na matriz", "Conferir") if c in base]
 editada = st.data_editor(
-    vista[COLUNAS_BASE], hide_index=True, width="stretch", height=600,
-    disabled=["Banco/Conta", "Data", "Descrição", "Valor"],
+    vista[COLUNAS_BASE + extras], hide_index=True, width="stretch", height=600,
+    disabled=["Banco/Conta", "Data", "Descrição", "Valor"] + extras,
     column_config={"Data": st.column_config.DateColumn(format="DD/MM/YYYY"),
                    "Valor": st.column_config.NumberColumn(format="%.2f")},
 )
