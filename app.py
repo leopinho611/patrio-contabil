@@ -3,8 +3,18 @@
     streamlit run app.py
 """
 
+import importlib
+import sys
+
 import pandas as pd
 import streamlit as st
+
+# Depois de uma atualização, o Streamlit Cloud recarrega este arquivo mas mantém na
+# memória a versão antiga dos outros módulos (a leitura continua a de antes até alguém
+# reiniciar o app). Recarregá-los aqui evita isso.
+for _modulo in ("financeiro", "leitores_pdf", "importacao"):   # nessa ordem
+    if _modulo in sys.modules:
+        importlib.reload(sys.modules[_modulo])
 
 from importacao import COLUNAS_BASE, importar, para_excel
 
