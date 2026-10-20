@@ -4,6 +4,7 @@
 """
 
 import importlib
+import io
 import sys
 
 import pandas as pd
@@ -29,9 +30,20 @@ enviados = st.file_uploader("Arquivos", accept_multiple_files=True,
 if not enviados:
     st.stop()
 
+@st.cache_data(show_spinner="Lendo os arquivos...", max_entries=3)
+def ler(arquivos, ajustes):
+    return importar(arquivos, ajustes)
+
+
+@st.cache_data(max_entries=3)
+def matriz_lida(conteudo):
+    return ler_matriz(io.BytesIO(conteudo))
+
+
 arquivos = [(f.name, f.getvalue()) for f in enviados]
 ajustes = st.session_state.setdefault("ajustes", {})
-base, leitura, layouts = importar(arquivos, ajustes)
+base, leitura, layouts = ler(arquivos, ajustes)
+base = base.copy()
 
 with st.expander(f"Arquivos lidos ({len(leitura)})", expanded=base.empty):
     st.dataframe(leitura, hide_index=True, width="stretch")
@@ -60,30 +72,26 @@ if base.empty:
     st.warning("Nenhum lançamento lido.")
     st.stop()
 
-contas = base.groupby("Banco/Conta")["Valor"].agg(Lançamentos="count", Entradas=lambda v: v[v > 0].sum(),
-                                                  Saídas=lambda v: v[v < 0].sum())
-st.subheader(f"{len(base)} lançamentos em {len(contas)} conta(s)")
-st.dataframe(contas, width="stretch",
-             column_config={"Entradas": st.column_config.NumberColumn(format="R$ %.2f"),
-                            "Saídas": st.column_config.NumberColumn(format="R$ %.2f")})
+contas = sorted(base["Banco/Conta"].unique())
 
-with st.expander("Lançamentos contábeis (débito, crédito e histórico)"):
-    st.caption("Saída do banco: débito no fornecedor, crédito no banco. Entrada: débito no banco, "
-               "crédito no cliente. A conta do fornecedor ou cliente vem da planilha matriz.")
-    matriz_enviada = st.file_uploader("Planilha matriz", type=["xlsx", "xls"], key="matriz")
-    codigos = st.session_state.setdefault("codigos", {})
-    tabela = pd.DataFrame({"Banco/Conta": contas.index,
-                           "Código": [codigos.get(c, "") for c in contas.index]})
-    tabela = st.data_editor(tabela, hide_index=True, disabled=["Banco/Conta"], key="tab_codigos",
-                            column_config={"Código": st.column_config.TextColumn()})
-    codigos.update({c: str(v or "").strip() for c, v in zip(tabela["Banco/Conta"], tabela["Código"])})
-    if matriz_enviada:
-        base = classificar(base, ler_matriz(matriz_enviada), codigos)
-        prontos = ((base["Débito"] != "") & (base["Crédito"] != "")).sum()
-        st.write(f"{prontos} de {len(base)} lançamentos com débito e crédito. "
-                 "O motivo dos outros está na coluna Conferir.")
+st.subheader("Lançamentos contábeis")
+st.caption("Saída do banco: débito no fornecedor, crédito no banco. Entrada: débito no banco, "
+           "crédito no cliente. A conta do fornecedor ou cliente vem da planilha matriz.")
+matriz_enviada = st.file_uploader("Planilha matriz", type=["xlsx", "xls"], key="matriz")
+st.write("Código contábil de cada conta (banco, aplicação, cartão):")
+codigos = {}
+colunas = st.columns(2)
+for n, conta in enumerate(contas):
+    codigos[conta] = colunas[n % 2].text_input(conta, key=f"codigo {conta}").strip()
+if matriz_enviada:
+    base = classificar(base, matriz_lida(matriz_enviada.getvalue()), codigos)
+    prontos = ((base["Débito"] != "") & (base["Crédito"] != "")).sum()
+    st.info(f"{prontos} de {len(base)} lançamentos com débito e crédito. "
+            "O motivo dos outros está na coluna Conferir.")
+else:
+    st.info("Envie a planilha matriz para preencher débito, crédito e histórico.")
 
-filtro = st.multiselect("Contas", list(contas.index), default=list(contas.index))
+filtro = st.multiselect("Contas", contas, default=contas)
 vista = base[base["Banco/Conta"].isin(filtro)]
 extras = [c for c in ("Conta na matriz", "Conferir") if c in base]
 editada = st.data_editor(
