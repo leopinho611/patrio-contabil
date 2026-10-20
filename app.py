@@ -17,7 +17,7 @@ for _modulo in ("financeiro", "leitores_pdf", "importacao", "classificacao"):   
     if _modulo in sys.modules:
         importlib.reload(sys.modules[_modulo])
 
-from classificacao import classificar, ler_matriz, parece_matriz
+from classificacao import classificar, ler_matriz, parece_matriz, parece_planilha_base
 from importacao import COLUNAS_BASE, importar, para_excel
 
 st.set_page_config(page_title="Patrio · Planilha base", layout="wide")
@@ -44,6 +44,11 @@ arquivos = [(f.name, f.getvalue()) for f in enviados]
 # A matriz enviada junto com os extratos vai para a classificação, não para a leitura
 matrizes = [a for a in arquivos if parece_matriz(*a)]
 arquivos = [a for a in arquivos if a not in matrizes]
+# Uma planilha base baixada daqui não é extrato: lida de novo, duplicaria tudo
+for nome, conteudo in [a for a in arquivos if parece_planilha_base(*a)]:
+    st.warning(f"{nome} é uma planilha base gerada por este app e foi ignorada. "
+               "Para classificar, envie a planilha matriz (descrição e conta contábil).")
+    arquivos.remove((nome, conteudo))
 ajustes = st.session_state.setdefault("ajustes", {})
 base, leitura, layouts = ler(arquivos, ajustes)
 base = base.copy()

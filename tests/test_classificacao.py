@@ -3,7 +3,7 @@ import io
 import pandas as pd
 
 from classificacao import (HIST_ENTRADA, HIST_SAIDA, classificar, ler_contas_bancos, ler_matriz,
-                           parece_matriz, procurar_na_matriz)
+                           parece_matriz, parece_planilha_base, procurar_na_matriz)
 
 CC = "Itaú Ag 1234 Cc 55555-1"
 APLIC = "Itaú Aplic Aut Mais Ag 1234 Cc 55555-1"
@@ -108,3 +108,11 @@ def test_reconhece_a_matriz_pelo_nome_ou_pelo_cabecalho():
         extrato, index=False)
     assert not parece_matriz("extrato.xlsx", extrato.getvalue())
     assert not parece_matriz("matriz.pdf", b"")
+
+
+def test_reconhece_a_planilha_base_baixada_do_app():
+    saida = io.BytesIO()
+    pd.DataFrame(columns=["Banco/Conta", "Data", "Descrição", "Valor", "Débito", "Crédito",
+                          "Histórico", "Arquivo"]).to_excel(saida, index=False)
+    assert parece_planilha_base("planilha_base.xlsx", saida.getvalue())
+    assert not parece_matriz("planilha_base.xlsx", saida.getvalue())
