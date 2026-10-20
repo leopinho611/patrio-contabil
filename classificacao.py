@@ -10,6 +10,7 @@ dos bancos (Banco/Conta da planilha base -> código). O que não dá para decidi
 branco, com o motivo na coluna "Conferir".
 """
 
+import io
 import re
 import unicodedata
 
@@ -70,6 +71,21 @@ def ler_matriz(arquivo):
     m["Nome"] = m["Descrição"].map(_nome_na_matriz)
     m["Recebimento"] = m["Descrição"].str.match(_RECEBIMENTO)
     return m.reset_index(drop=True)
+
+
+def parece_matriz(nome, conteudo):
+    """O arquivo é a planilha matriz? Pelo nome ou pelo cabeçalho "Conta Contábil"."""
+    nome = _sem_acento(nome)
+    if not nome.endswith((".xlsx", ".xls")):
+        return False
+    if "matriz" in nome:
+        return True
+    try:
+        topo = pd.read_excel(io.BytesIO(conteudo), header=None, dtype=str, nrows=10)
+    except Exception:
+        return False
+    return topo.shape[1] >= 2 and topo.iloc[:, 1].fillna("").map(_sem_acento) \
+        .str.startswith("conta cont").any()
 
 
 # Linhas da matriz que são de dinheiro entrando (cliente pagando, depósito, cartão)

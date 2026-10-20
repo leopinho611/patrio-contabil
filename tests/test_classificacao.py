@@ -3,7 +3,7 @@ import io
 import pandas as pd
 
 from classificacao import (HIST_ENTRADA, HIST_SAIDA, classificar, ler_contas_bancos, ler_matriz,
-                           procurar_na_matriz)
+                           parece_matriz, procurar_na_matriz)
 
 CC = "Itaú Ag 1234 Cc 55555-1"
 APLIC = "Itaú Aplic Aut Mais Ag 1234 Cc 55555-1"
@@ -95,3 +95,16 @@ def test_ler_contas_bancos_csv(tmp_path):
     f = tmp_path / "contas.csv"
     f.write_text("Banco/Conta;Código\nItaú Ag 1234 Cc 55555-1;100\n", encoding="utf-8")
     assert ler_contas_bancos(f) == {CC: "100"}
+
+
+def test_reconhece_a_matriz_pelo_nome_ou_pelo_cabecalho():
+    saida = io.BytesIO()
+    pd.DataFrame([("Descrição", "Conta Contábil"), ("PADARIA", "501")]).to_excel(
+        saida, header=False, index=False)
+    assert parece_matriz("planilha cliente.xlsx", saida.getvalue())
+    assert parece_matriz("Matriz cliente.xlsx", b"")
+    extrato = io.BytesIO()
+    pd.DataFrame({"Data": ["05/01/2026"], "Histórico": ["PIX"], "Valor": [10]}).to_excel(
+        extrato, index=False)
+    assert not parece_matriz("extrato.xlsx", extrato.getvalue())
+    assert not parece_matriz("matriz.pdf", b"")

@@ -17,7 +17,7 @@ for _modulo in ("financeiro", "leitores_pdf", "importacao", "classificacao"):   
     if _modulo in sys.modules:
         importlib.reload(sys.modules[_modulo])
 
-from classificacao import classificar, ler_matriz
+from classificacao import classificar, ler_matriz, parece_matriz
 from importacao import COLUNAS_BASE, importar, para_excel
 
 st.set_page_config(page_title="Patrio · Planilha base", layout="wide")
@@ -41,6 +41,9 @@ def matriz_lida(conteudo):
 
 
 arquivos = [(f.name, f.getvalue()) for f in enviados]
+# A matriz enviada junto com os extratos vai para a classificação, não para a leitura
+matrizes = [a for a in arquivos if parece_matriz(*a)]
+arquivos = [a for a in arquivos if a not in matrizes]
 ajustes = st.session_state.setdefault("ajustes", {})
 base, leitura, layouts = ler(arquivos, ajustes)
 base = base.copy()
@@ -78,16 +81,24 @@ st.subheader("Lançamentos contábeis")
 st.caption("Saída do banco: débito no fornecedor, crédito no banco. Entrada: débito no banco, "
            "crédito no cliente. A conta do fornecedor ou cliente vem da planilha matriz.")
 matriz_enviada = st.file_uploader("Planilha matriz", type=["xlsx", "xls"], key="matriz")
+matriz = matriz_enviada.getvalue() if matriz_enviada else (matrizes[0][1] if matrizes else None)
+if matrizes and not matriz_enviada:
+    st.caption(f"Usando a matriz enviada junto com os extratos: {matrizes[0][0]}")
 st.write("Código contábil de cada conta (banco, aplicação, cartão):")
 codigos = {}
 colunas = st.columns(2)
 for n, conta in enumerate(contas):
     codigos[conta] = colunas[n % 2].text_input(conta, key=f"codigo {conta}").strip()
-if matriz_enviada:
-    base = classificar(base, matriz_lida(matriz_enviada.getvalue()), codigos)
+if matriz:
+    base = classificar(base, matriz_lida(matriz), codigos)
     prontos = ((base["Débito"] != "") & (base["Crédito"] != "")).sum()
-    st.info(f"{prontos} de {len(base)} lançamentos com débito e crédito. "
-            "O motivo dos outros está na coluna Conferir.")
+    achados = (base["Conta na matriz"] != "").sum()
+    if not any(codigos.values()):
+        st.warning(f"A matriz achou a conta de {achados} de {len(base)} lançamentos. Preencha o "
+                   "código de cada conta acima para completar o lado do banco.")
+    else:
+        st.info(f"{prontos} de {len(base)} lançamentos com débito e crédito. "
+                "O motivo dos outros está na coluna Conferir.")
 else:
     st.info("Envie a planilha matriz para preencher débito, crédito e histórico.")
 
