@@ -88,6 +88,17 @@ def parece_matriz(nome, conteudo):
         .str.startswith("conta cont").any()
 
 
+def parece_planilha_base(nome, conteudo):
+    """O arquivo é uma planilha base baixada deste app (não é extrato nem matriz)?"""
+    if not _sem_acento(nome).endswith((".xlsx", ".xls")):
+        return False
+    try:
+        topo = pd.read_excel(io.BytesIO(conteudo), header=None, dtype=str, nrows=1)
+    except Exception:
+        return False
+    return {"Banco/Conta", "Débito", "Crédito", "Histórico"} <= set(topo.iloc[0].fillna(""))
+
+
 # Linhas da matriz que são de dinheiro entrando (cliente pagando, depósito, cartão)
 _RECEBIMENTO = re.compile(r"(?i)^(dep[oó]sito|pix recep|credito\b|adiantamento reserva|"
                           r"recupera)")
