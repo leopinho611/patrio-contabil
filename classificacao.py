@@ -198,6 +198,21 @@ def ler_contas_bancos(arquivo):
     return {str(c).strip(): str(v).strip().removesuffix(".0") for c, v in t.itertuples(index=False)}
 
 
+def codigos_na_matriz(arquivo):
+    """Códigos das contas guardados na matriz: uma aba com as colunas Banco/Conta e Código
+    (Banco/Conta escrita como aparece na planilha base). {} se a matriz não tiver."""
+    for aba in pd.read_excel(arquivo, sheet_name=None, header=None, dtype=str).values():
+        aba = aba.fillna("").map(lambda v: str(v).strip())
+        for i, linha in aba.iterrows():
+            celulas = list(linha)
+            if "Banco/Conta" in celulas and "Código" in celulas:
+                c_conta, c_codigo = celulas.index("Banco/Conta"), celulas.index("Código")
+                abaixo = aba.iloc[i + 1:]
+                return {conta: codigo.removesuffix(".0") for conta, codigo in
+                        zip(abaixo[c_conta], abaixo[c_codigo]) if conta and codigo}
+    return {}
+
+
 def _codigo_do_banco(conta, contas_bancos):
     return str(contas_bancos.get(conta, "") or "").strip()
 

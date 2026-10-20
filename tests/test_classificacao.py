@@ -2,7 +2,7 @@ import io
 
 import pandas as pd
 
-from classificacao import (HIST_ENTRADA, HIST_SAIDA, classificar, ler_contas_bancos, ler_matriz,
+from classificacao import (HIST_ENTRADA, HIST_SAIDA, classificar, codigos_na_matriz, ler_contas_bancos, ler_matriz,
                            parece_matriz, parece_planilha_base, procurar_na_matriz)
 
 CC = "Itaú Ag 1234 Cc 55555-1"
@@ -116,3 +116,17 @@ def test_reconhece_a_planilha_base_baixada_do_app():
                           "Histórico", "Arquivo"]).to_excel(saida, index=False)
     assert parece_planilha_base("planilha_base.xlsx", saida.getvalue())
     assert not parece_matriz("planilha_base.xlsx", saida.getvalue())
+
+
+def test_codigos_das_contas_numa_aba_da_matriz():
+    saida = io.BytesIO()
+    with pd.ExcelWriter(saida) as w:
+        pd.DataFrame([("Descrição", "Conta Contábil"), ("PADARIA", "501")]).to_excel(
+            w, sheet_name="Planilha1", header=False, index=False)
+        pd.DataFrame([("", "", ""), ("", "Banco/Conta", "Código"), ("", CC, 100),
+                      ("", CARTAO, None)]).to_excel(w, sheet_name="Planilha2", header=False,
+                                                    index=False)
+    saida.seek(0)
+    assert codigos_na_matriz(saida) == {CC: "100"}
+    saida.seek(0)
+    assert len(ler_matriz(saida)) == 1
