@@ -17,7 +17,7 @@ for _modulo in ("financeiro", "leitores_pdf", "importacao", "classificacao"):   
     if _modulo in sys.modules:
         importlib.reload(sys.modules[_modulo])
 
-from classificacao import classificar, ler_matriz, parece_matriz, parece_planilha_base
+from classificacao import classificar, codigos_na_matriz, ler_matriz, parece_matriz, parece_planilha_base
 from importacao import COLUNAS_BASE, importar, para_excel
 
 st.set_page_config(page_title="Patrio · Planilha base", layout="wide")
@@ -37,7 +37,7 @@ def ler(arquivos, ajustes):
 
 @st.cache_data(max_entries=3)
 def matriz_lida(conteudo):
-    return ler_matriz(io.BytesIO(conteudo))
+    return ler_matriz(io.BytesIO(conteudo)), codigos_na_matriz(io.BytesIO(conteudo))
 
 
 arquivos = [(f.name, f.getvalue()) for f in enviados]
@@ -90,12 +90,18 @@ matriz = matriz_enviada.getvalue() if matriz_enviada else (matrizes[0][1] if mat
 if matrizes and not matriz_enviada:
     st.caption(f"Usando a matriz enviada junto com os extratos: {matrizes[0][0]}")
 st.write("Código contábil de cada conta (banco, aplicação, cartão):")
+matriz_df, codigos_matriz = matriz_lida(matriz) if matriz else (None, {})
+if codigos_matriz:
+    st.caption("Códigos preenchidos pela aba Banco/Conta e Código da matriz.")
 codigos = {}
 colunas = st.columns(2)
 for n, conta in enumerate(contas):
-    codigos[conta] = colunas[n % 2].text_input(conta, key=f"codigo {conta}").strip()
+    chave = f"codigo {conta}"
+    if not st.session_state.get(chave) and codigos_matriz.get(conta):
+        st.session_state[chave] = codigos_matriz[conta]
+    codigos[conta] = colunas[n % 2].text_input(conta, key=chave).strip()
 if matriz:
-    base = classificar(base, matriz_lida(matriz), codigos)
+    base = classificar(base, matriz_df, codigos)
     prontos = ((base["Débito"] != "") & (base["Crédito"] != "")).sum()
     achados = (base["Conta na matriz"] != "").sum()
     if not any(codigos.values()):
