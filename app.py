@@ -5,6 +5,7 @@
 
 import importlib
 import io
+import os
 import sys
 
 import pandas as pd
@@ -127,47 +128,90 @@ if base.empty:
 
 contas = sorted(base["Banco/Conta"].unique())
 
-# Classificação na barra lateral, para a tabela aparecer logo abaixo dos arquivos
+def nomes_curtos(nomes):
+    """Tira o começo repetido ("BANCO COOPERATIVO DO BRASIL S.A. - BANCOOB - ...") para
+    caber na barra lateral."""
+    curtos = {}
+    for n in nomes:
+        prefixo = ""
+        for outro in nomes:
+            if outro != n:
+                comum = n[:len(os.path.commonprefix([n, outro]))]
+                comum = comum[:comum.rfind(" - ") + 3] if " - " in comum else ""
+                prefixo = max(prefixo, comum, key=len)
+        curtos[n] = n[len(prefixo):] or n
+    return curtos
+
+
+# Classificação na barra lateral, para a tabela aparecer logo abaixo dos arquivos.
+# À vista só o histórico e o que falta preencher; o resto fica recolhido.
 with st.sidebar:
-    st.markdown("#### Lançamentos contábeis")
-    st.caption("Saída: débito no fornecedor, crédito no banco. Entrada: débito no banco, "
-               "crédito no cliente. A conta do fornecedor ou cliente vem da planilha matriz.")
-    matriz_enviada = st.file_uploader("Planilha matriz", type=["xlsx", "xls"], key="matriz")
-    matriz = matriz_enviada.getvalue() if matriz_enviada else (matrizes[0][1] if matrizes else None)
-    if matrizes and not matriz_enviada:
-        st.caption(f"Usando a matriz enviada junto com os arquivos: {matrizes[0][0]}")
-    matriz_df, codigos_matriz, bancos = matriz_lida(matriz) if matriz else (None, {}, {})
-    st.markdown("**Código contábil de cada conta**")
-    if codigos_matriz:
-        st.caption("Preenchidos pela matriz.")
-    codigos = {}
-    for conta in contas:
-        chave = f"codigo {conta}"
-        if not st.session_state.get(chave) and codigos_matriz.get(conta):
-            st.session_state[chave] = codigos_matriz[conta]
-        if bancos and not codigos_matriz.get(conta):
-            # A matriz traz a tabela BANCO | CONTA: escolhe o banco desta conta
-            opcoes = ["—"] + [f"{b} · {c}" for b, c in bancos.items()] + ["Outro código"]
-            escolha = st.selectbox(conta, opcoes, index=banco_parecido(conta, bancos),
-                                   key=f"banco {conta}")
-            if escolha == "Outro código":
-                codigos[conta] = st.text_input(f"Código de {conta}", key=chave).strip()
-            else:
-                codigos[conta] = escolha.rsplit(" · ", 1)[-1] if escolha != "—" else ""
-        else:
-            codigos[conta] = st.text_input(conta, key=chave).strip()
+    st.markdown("#### Lançamentos contábeis",
+                help="Saída: débito no fornecedor, crédito no banco. Entrada: débito no banco, "
+                     "crédito no cliente. A conta do fornecedor ou cliente vem da planilha matriz.")
 
     # Histórico das planilhas do cliente: dá para trocar a qualquer momento
     for n, (cols, info) in enumerate(layouts.items()):
         if info.get("duvidas"):
             continue
         atual = info["colunas"].get("descricao") or []
-        escolha = st.multiselect(f"Histórico de {', '.join(info['arquivos'])}", list(cols),
-                                 atual, key=f"hist{n}-{abs(hash(repr(info['colunas'])))}",
+        escolha = st.multiselect("Histórico" + (f" de {', '.join(info['arquivos'])}"
+                                                if len(layouts) > 1 else ""),
+                                 list(cols), atual,
+                                 key=f"hist{n}-{abs(hash(repr(info['colunas'])))}",
                                  help="Colunas juntadas para formar o histórico.")
         if escolha and escolha != atual:
             ajustes[cols] = dict(info["colunas"], descricao=escolha)
             st.rerun()
+
+    matriz_enviada = st.session_state.get("matriz")
+    matriz = matriz_enviada.getvalue() if matriz_enviada else (matrizes[0][1] if matrizes else None)
+    matriz_df, codigos_matriz, bancos = matriz_lida(matriz) if matriz else (None, {}, {})
+
+    curtos = nomes_curtos(list(contas) + list(bancos))
+    opcoes_banco = {"—": ""} | {f"{c} · {curtos[b]}": c for b, c in bancos.items()}
+    if len(opcoes_banco) <= len(bancos):   # nomes curtos repetidos: usa o nome inteiro
+        opcoes_banco = {"—": ""} | {f"{c} · {b}": c for b, c in bancos.items()}
+    codigos = {}
+    # O código de cada conta: escolhido antes de desenhar, para saber se falta algum
+    for conta in contas:
+        chave = f"codigo {conta}"
+        if not st.session_state.get(chave) and codigos_matriz.get(conta):
+            st.session_state[chave] = codigos_matriz[conta]
+    faltando = [c for c in contas if not st.session_state.get(f"codigo {c}")
+                and not (bancos and banco_parecido(c, bancos))
+                and st.session_state.get(f"banco {c}", "—") in ("—", "Outro código")]
+
+    def campo_do_codigo(conta, pronto):
+        chave = f"codigo {conta}"
+        if bancos and not codigos_matriz.get(conta):
+            # A matriz traz a tabela BANCO | CONTA: escolhe o banco desta conta. Já
+            # escolhido, o próprio item mostra o nome e o rótulo some.
+            opcoes = list(opcoes_banco) + ["Outro código"]
+            escolha = st.selectbox(curtos[conta], opcoes, index=banco_parecido(conta, bancos),
+                                   key=f"banco {conta}", help=conta,
+                                   label_visibility="collapsed" if pronto else "visible")
+            if escolha == "Outro código":
+                return st.text_input(f"Código de {curtos[conta]}", key=chave).strip()
+            return opcoes_banco[escolha]
+        return st.text_input(curtos[conta], key=chave, help=conta).strip()
+
+    if faltando:
+        st.markdown("**Falta o código de**")
+        for conta in faltando:
+            codigos[conta] = campo_do_codigo(conta, pronto=False)
+    prontas = [c for c in contas if c not in faltando]
+    if prontas:
+        with st.expander(f"Códigos das contas ({len(prontas)})"):
+            for conta in prontas:
+                codigos[conta] = campo_do_codigo(conta, pronto=True)
+
+    with st.expander("Planilha matriz" + (" · falta enviar" if not matriz else ""),
+                     expanded=not matriz):
+        st.file_uploader("Trocar a planilha matriz" if matriz else "Planilha matriz",
+                         type=["xlsx", "xls"], key="matriz")
+        if matrizes and not matriz_enviada:
+            st.caption(f"Usando {matrizes[0][0]}, enviada junto com os arquivos.")
 
 if matriz:
     base = classificar(base, matriz_df, codigos)
