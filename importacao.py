@@ -169,6 +169,33 @@ def colunas_em_duvida(df, colunas):
     return {k: v for k, v in duvidas.items() if len(v) > 1}
 
 
+# Coluna com o banco de cada lançamento (planilha financeira com várias contas)
+_NOMES_BANCO = {"banco", "conta", "banco/conta", "banco conta", "conta bancaria",
+                "conta corrente", "portador", "caixa/banco", "banco/caixa"}
+
+
+def coluna_de_banco(df):
+    """Coluna que diz de qual banco/conta é cada lançamento, ou None."""
+    for c in df.columns:
+        if normalizar(c).strip() in _NOMES_BANCO:
+            v = df[c].dropna().astype(str).str.strip()
+            # Nome de banco (texto), não número de conta contábil
+            if len(v) and v.str.contains(r"[A-Za-z]").mean() > 0.6:
+                return c
+    return None
+
+
+def historico_sugerido(df, colunas):
+    """Colunas sugeridas para o histórico quando há mais de uma possível: o fornecedor ou
+    cliente primeiro (é o nome que a matriz procura), depois a descrição."""
+    def com(prefixos):
+        return [c for c in df.columns if any(_casa(c, p) for p in prefixos)
+                and not normalizar(c).startswith(("cnpj", "cpf"))]
+    nomes = com(("fornec", "favorec", "cliente"))[:1]
+    descricao = (com(("descri",)) or com(("histor",)))[:1]
+    return (nomes + descricao) if nomes and descricao else colunas.get("descricao")
+
+
 def coluna_de_sentido(df):
     """Coluna com ENTRADA/SAIDA (ou C/D, receita/despesa) na maioria das linhas (o resto
     costuma ser linha de total)."""
@@ -251,6 +278,11 @@ def importar(arquivos, colunas_por_layout=None):
         escolhido = colunas_por_layout.get(cols)
         colunas = escolhido or detectar_colunas(bruto)
         duvidas = {} if escolhido else colunas_em_duvida(bruto, colunas)
+        if not escolhido:
+            # Histórico não é perguntado: vai a sugestão, que pode ser trocada depois
+            if duvidas.pop("descricao", None):
+                colunas = dict(colunas, descricao=historico_sugerido(bruto, colunas))
+            colunas = dict(colunas, banco=coluna_de_banco(bruto))
         layouts[cols] = {"amostra": bruto.head(5), "colunas": colunas,
                          "arquivos": [n for n, _ in grupo], "duvidas": duvidas}
         if duvidas:
@@ -262,16 +294,25 @@ def importar(arquivos, colunas_por_layout=None):
             continue
         for nome, r in grupo:
             bruto, sentido = _com_sinal(r["bruto"], colunas)
+            conta = conta_do_arquivo(nome, b"", r["conta"])
+            banco = colunas.get("banco")
+            # Com a coluna do banco, cada lançamento vai para a conta da sua linha
+            partes = ([(str(b).strip(), p) for b, p in
+                       bruto.assign(_b=bruto[banco].fillna(f"{conta} (sem banco)")).groupby("_b", sort=False)
+                       # fora as linhas de total (sem data), que trazem valores na coluna
+                       if converter_datas(p[colunas["data"]]).notna().any()]
+                      if banco in bruto and colunas.get("data") else [(conta, bruto)])
             try:
-                t = montar_transacoes(bruto, colunas,
-                                      conta_do_arquivo(nome, b"", r["conta"]))
+                t = pd.concat([montar_transacoes(p, colunas, b) for b, p in partes],
+                              ignore_index=True)
             except ValueError as e:
                 leitura.append({"Arquivo": nome, "Banco/Conta": r["conta"],
                                 "Situação": f"colunas não identificadas: {e}"})
                 continue
             t["Arquivo"] = nome
             tabelas.append(t)
-            leitura.append({"Arquivo": nome, "Banco/Conta": conta_do_arquivo(nome, b"", r["conta"]),
+            leitura.append({"Arquivo": nome,
+                            "Banco/Conta": f"pela coluna {banco}" if banco in bruto else conta,
                             "Situação": f"{len(t)} lançamentos"
                                         + (f" (entrada/saída pela coluna {sentido})"
                                            if sentido else "")})
