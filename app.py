@@ -20,10 +20,19 @@ for _modulo in ("financeiro", "leitores_pdf", "importacao", "classificacao"):   
 from classificacao import bancos_na_matriz, classificar, codigos_na_matriz, ler_matriz, parece_matriz, parece_planilha_base
 from importacao import COLUNAS_BASE, importar, para_excel
 
-st.set_page_config(page_title="Patrio · Planilha base", layout="wide")
-# Menos espaço antes da tabela: título pequeno e topo da página mais curto
-st.markdown("<style>.block-container{padding-top:1.5rem}</style>", unsafe_allow_html=True)
-st.markdown("#### Planilha base")
+st.set_page_config(page_title="Patrio · Planilha base APP", layout="wide")
+# Cabeçalho no visual da Patrio (cores em .streamlit/config.toml). O topo da página fica
+# abaixo da barra do Streamlit, para o título não ser cortado.
+st.markdown("""<style>
+.block-container{padding-top:3.5rem}
+.patrio{display:flex;align-items:baseline;gap:.8rem;flex-wrap:wrap;margin-bottom:.4rem;
+        padding-bottom:.5rem;border-bottom:3px solid #C9A45C}
+.patrio b{font-size:1.9rem;font-weight:800;color:#1B2A41;letter-spacing:.02em}
+.patrio span{font-size:1.9rem;font-weight:800;color:#C9A45C;letter-spacing:.02em}
+.patrio small{color:#5B6B80;font-size:.95rem}
+</style>
+<div class="patrio"><b>PLANILHA BASE</b><span>APP</span>
+<small>Patrio · contabilidade também é estratégia</small></div>""", unsafe_allow_html=True)
 
 enviados = st.file_uploader(
     "Arquivos do banco e do cliente (zip, OFX, PDF, CSV ou Excel), com a planilha matriz. "
@@ -56,14 +65,16 @@ ajustes = st.session_state.setdefault("ajustes", {})
 base, leitura, layouts = ler(arquivos, ajustes)
 base = base.copy()
 
-with st.expander(f"Arquivos lidos ({len(leitura)})", expanded=base.empty):
+# "Arquivos lidos" e as colunas das planilhas lado a lado
+lado_arquivos, lado_colunas = st.columns(2) if layouts else (st.container(), None)
+with lado_arquivos.expander(f"Arquivos lidos ({len(leitura)})", expanded=base.empty):
     st.dataframe(leitura, hide_index=True, width="stretch")
 
 for n, (cols, info) in enumerate(layouts.items()):
     c = info["colunas"]
     completo = c.get("data") and c.get("descricao") and (c.get("valor") or c.get("credito"))
     duvidas = info.get("duvidas") or {}
-    with st.expander(f"Colunas de {', '.join(info['arquivos'])}",
+    with lado_colunas.expander(f"Colunas de {', '.join(info['arquivos'])}",
                      expanded=not completo or bool(duvidas)):
         if duvidas:
             nomes = {"data": "data", "valor": "valor", "descricao": "histórico"}
@@ -74,7 +85,8 @@ for n, (cols, info) in enumerate(layouts.items()):
                        "No histórico, dá para escolher mais de uma: elas são juntadas.")
         opcoes = ["—"] + list(cols)
         idx = lambda k: opcoes.index(c[k]) if c.get(k) in opcoes else 0
-        a, b, d, e, f = st.columns(5)
+        a, b, d = st.columns(3)
+        e, f, _ = st.columns(3)
         v = abs(hash(repr(c)))   # widgets recomeçam quando a escolha muda (ex.: pela barra lateral)
         novo = {
             "data": a.selectbox("Data", opcoes, idx("data"), key=f"d{n}-{v}"),
@@ -158,12 +170,33 @@ if matriz:
 else:
     st.info("Envie a planilha matriz para preencher débito, crédito e histórico.")
 
-filtro = st.multiselect("Contas", contas, default=contas)
-vista = base[base["Banco/Conta"].isin(filtro)]
+base.insert(base.columns.get_loc("Valor") + 1, "Entrada/Saída",
+            base["Valor"].map(lambda v: "Entrada" if v > 0 else "Saída" if v < 0 else ""))
+
+# Filtros da tabela
+f_contas, f_tipo, f_situacao, f_busca = st.columns([3, 1.3, 1.5, 2.5])
+filtro = f_contas.multiselect("Contas", contas, default=contas)
+tipo = f_tipo.selectbox("Entrada/Saída", ["Todas", "Entrada", "Saída"])
+situacao = f_situacao.selectbox("Classificação", ["Todos", "Com débito e crédito", "A conferir"])
+busca = f_busca.text_input("Buscar", placeholder="fornecedor, histórico, conta, valor...")
+vista = base[base["Banco/Conta"].isin(filtro) & (tipo == "Todas" or base["Entrada/Saída"] == tipo)]
+completo = (vista["Débito"] != "") & (vista["Crédito"] != "")
+if situacao == "Com débito e crédito":
+    vista = vista[completo]
+elif situacao == "A conferir":
+    vista = vista[~completo]
+if busca.strip():
+    texto = vista.astype(str).apply(" ".join, axis=1).str.lower()
+    vista = vista[texto.str.contains(busca.strip().lower(), regex=False)]
+st.caption(f"{len(vista)} de {len(base)} lançamentos na tabela.")
 extras = [c for c in ("Conta na matriz", "Conferir") if c in base]
+colunas_vista = COLUNAS_BASE[:4] + ["Entrada/Saída"] + COLUNAS_BASE[4:] + extras
+# Linhas sem débito ou crédito em amarelo-claro, para achar o que falta conferir
+amarelo = lambda linha: ["background-color:#FFF6C7" if not (linha["Débito"] and linha["Crédito"])
+                         else ""] * len(linha)
 editada = st.data_editor(
-    vista[COLUNAS_BASE + extras], hide_index=True, width="stretch", height=600,
-    disabled=["Banco/Conta", "Data", "Descrição", "Valor"] + extras,
+    vista[colunas_vista].style.apply(amarelo, axis=1), hide_index=True, width="stretch", height=600,
+    disabled=["Banco/Conta", "Data", "Descrição", "Valor", "Entrada/Saída"] + extras,
     column_config={"Data": st.column_config.DateColumn(format="DD/MM/YYYY"),
                    "Valor": st.column_config.NumberColumn(format="%.2f")},
 )

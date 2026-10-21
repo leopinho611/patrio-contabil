@@ -1,0 +1,19 @@
+# Cores da Patrio: azul-marinho e dourado; verde para destaques (contas, arquivos, botões)
+[theme]
+base = "light"
+primaryColor = "#2E8B57"
+backgroundColor = "#FFFFFF"
+secondaryBackgroundColor = "#F6F3EC"
+textColor = "#1B2A41"
+linkColor = "#B8934A"
+borderColor = "#E3DCCB"
+baseRadius = "medium"
+font = "sans-serif"
+headingFont = "sans-serif"
+headingFontWeights = [800, 800, 700, 700, 700, 700]
+
+[theme.sidebar]
+backgroundColor = "#1B2A41"
+secondaryBackgroundColor = "#24364F"
+textColor = "#F6F3EC"
+borderColor = "#2F4563"
