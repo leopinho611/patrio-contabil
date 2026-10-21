@@ -88,9 +88,10 @@ def test_planilha_do_cliente_com_colunas_em_duvida_espera_a_escolha():
     base, leitura, layouts = importar([("financeiro cliente.csv", PLANILHA_CLIENTE)])
     assert base.empty
     (cols, info), = layouts.items()
+    # Histórico não é perguntado: vai a sugestão (fornecedor + descrição)
     assert info["duvidas"] == {"data": ["Data Emissão", "Data Pagamento"],
-                               "descricao": ["Fornecedor", "Histórico", "Descrição"],
                                "valor": ["Valor Bruto", "Valor Pago"]}
+    assert info["colunas"]["descricao"] == ["Fornecedor", "Descrição"]
     assert "escolha a coluna de" in leitura["Situação"].iat[0]
 
     escolha = {"data": "Data Pagamento", "descricao": ["Fornecedor", "Descrição"],
@@ -123,9 +124,27 @@ RELATORIO_HTML = """
 def test_relatorio_html_salvo_como_xls_com_coluna_de_entrada_e_saida():
     base, leitura, layouts = importar([("relatorio.xls", RELATORIO_HTML)])
     (cols, info), = layouts.items()
-    assert info["duvidas"] == {"descricao": ["Descrição", "Fornecedor", "Observação"]}
+    assert info["duvidas"] == {}
+    assert info["colunas"]["descricao"] == ["Fornecedor", "Descrição"]
+    assert base["Descrição"].iat[1] == "PADARIA AURORA - DESPESAS"
     escolha = dict(info["colunas"], descricao=["Fornecedor", "Observação"])
     base, leitura, _ = importar([("relatorio.xls", RELATORIO_HTML)], {cols: escolha})
     assert list(base["Valor"]) == [500.0, -1200.5]
     assert base["Descrição"].iat[1] == "PADARIA AURORA - CAFE"
     assert "entrada/saída pela coluna Operação" in leitura["Situação"].iat[0]
+
+
+RELATORIO_COM_BANCO = ("Operação;Descrição;Valor Pagamento;Data Pagamento;Fornecedor;Banco\n"
+                       "ENTRADA;RECEBIMENTOS;500,00;06/04/2026;CLIENTE ALFA;BANCO GAMA - CONTA 1\n"
+                       "SAIDA;DESPESAS;120,50;07/04/2026;PADARIA AURORA;BANCO DELTA\n"
+                       "SAIDA;DESPESAS;30,00;08/04/2026;GRAFICA BETA;\n"
+                       "Total:;;349,50;;;R$ 349,50\n").encode()
+
+
+def test_planilha_com_coluna_do_banco_separa_as_contas():
+    base, leitura, layouts = importar([("financeiro.csv", RELATORIO_COM_BANCO)])
+    assert next(iter(layouts.values()))["colunas"]["banco"] == "Banco"
+    contas = dict(zip(base["Valor"], base["Banco/Conta"]))
+    assert contas == {500.0: "BANCO GAMA - CONTA 1", -120.5: "BANCO DELTA",
+                      -30.0: "financeiro (sem banco)"}
+    assert leitura["Banco/Conta"].iat[0] == "pela coluna Banco"

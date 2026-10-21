@@ -52,6 +52,17 @@ def matriz_lida(conteudo):
             bancos_na_matriz(io.BytesIO(conteudo)))
 
 
+def banco_parecido(conta, bancos):
+    """Posição (na lista com "—" na frente) do banco da matriz com o nome desta conta: o
+    nome igual, senão o nome mais longo contido nela (ex.: SICOOB em "... SICOOB CREDIMEP")."""
+    chave = lambda t: " ".join(str(t).lower().split())
+    nomes = [chave(b) for b in bancos]
+    if chave(conta) in nomes:
+        return nomes.index(chave(conta)) + 1
+    contidos = [(len(b), i) for i, b in enumerate(nomes) if b and b in chave(conta)]
+    return max(contidos)[1] + 1 if contidos else 0
+
+
 arquivos = [(f.name, f.getvalue()) for f in enviados]
 # A matriz enviada junto com os extratos vai para a classificação, não para a leitura
 matrizes = [a for a in arquivos if parece_matriz(*a)]
@@ -81,12 +92,11 @@ for n, (cols, info) in enumerate(layouts.items()):
             st.warning("Encontrei mais de uma coluna possível para "
                        + "; ".join(f"**{nomes[k]}** ({', '.join(map(str, v))})"
                                    for k, v in duvidas.items())
-                       + ". Escolha abaixo quais usar e clique em **Usar estas colunas**. "
-                       "No histórico, dá para escolher mais de uma: elas são juntadas.")
+                       + ". Escolha abaixo quais usar e clique em **Usar estas colunas**.")
         opcoes = ["—"] + list(cols)
         idx = lambda k: opcoes.index(c[k]) if c.get(k) in opcoes else 0
         a, b, d = st.columns(3)
-        e, f, _ = st.columns(3)
+        e, f, g = st.columns(3)
         v = abs(hash(repr(c)))   # widgets recomeçam quando a escolha muda (ex.: pela barra lateral)
         novo = {
             "data": a.selectbox("Data", opcoes, idx("data"), key=f"d{n}-{v}"),
@@ -94,6 +104,9 @@ for n, (cols, info) in enumerate(layouts.items()):
             "valor": d.selectbox("Valor", opcoes, idx("valor"), key=f"v{n}-{v}"),
             "credito": e.selectbox("Crédito", opcoes, idx("credito"), key=f"c{n}-{v}"),
             "debito": f.selectbox("Débito", opcoes, idx("debito"), key=f"b{n}-{v}"),
+            "banco": g.selectbox("Banco/Conta de cada linha", opcoes, idx("banco"), key=f"k{n}-{v}",
+                                 help="Coluna com o banco de cada lançamento. Sem ela, a conta "
+                                      "é o nome do arquivo."),
         }
         novo = {k: (None if v == "—" else v) for k, v in novo.items()}
         st.dataframe(info["amostra"], width="stretch")
@@ -135,8 +148,7 @@ with st.sidebar:
         if bancos and not codigos_matriz.get(conta):
             # A matriz traz a tabela BANCO | CONTA: escolhe o banco desta conta
             opcoes = ["—"] + [f"{b} · {c}" for b, c in bancos.items()] + ["Outro código"]
-            parecido = [i + 1 for i, b in enumerate(bancos) if b.lower() in conta.lower()]
-            escolha = st.selectbox(conta, opcoes, index=parecido[0] if parecido else 0,
+            escolha = st.selectbox(conta, opcoes, index=banco_parecido(conta, bancos),
                                    key=f"banco {conta}")
             if escolha == "Outro código":
                 codigos[conta] = st.text_input(f"Código de {conta}", key=chave).strip()
@@ -170,7 +182,7 @@ if matriz:
 else:
     st.info("Envie a planilha matriz para preencher débito, crédito e histórico.")
 
-base.insert(base.columns.get_loc("Valor") + 1, "Entrada/Saída",
+base.insert(base.columns.get_loc("Data"), "Entrada/Saída",
             base["Valor"].map(lambda v: "Entrada" if v > 0 else "Saída" if v < 0 else ""))
 
 # Filtros da tabela
@@ -190,7 +202,7 @@ if busca.strip():
     vista = vista[texto.str.contains(busca.strip().lower(), regex=False)]
 st.caption(f"{len(vista)} de {len(base)} lançamentos na tabela.")
 extras = [c for c in ("Conta na matriz", "Conferir") if c in base]
-colunas_vista = COLUNAS_BASE[:4] + ["Entrada/Saída"] + COLUNAS_BASE[4:] + extras
+colunas_vista = COLUNAS_BASE[:1] + ["Entrada/Saída"] + COLUNAS_BASE[1:] + extras
 # Linhas sem débito ou crédito em amarelo-claro, para achar o que falta conferir
 amarelo = lambda linha: ["background-color:#FFF6C7" if not (linha["Débito"] and linha["Crédito"])
                          else ""] * len(linha)
