@@ -26,7 +26,7 @@ st.caption("Envie os arquivos do banco e do cliente (zip, OFX, PDF, CSV ou Excel
            "Tudo é lido na memória e descartado ao fechar a página.")
 
 enviados = st.file_uploader("Arquivos", accept_multiple_files=True,
-                            type=["zip", "ofx", "pdf", "csv", "txt", "xlsx", "xls", "excel"])
+                            type=["zip", "ofx", "pdf", "csv", "txt", "xlsx", "xls", "excel", "htm", "html"])
 if not enviados:
     st.stop()
 
