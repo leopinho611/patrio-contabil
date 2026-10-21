@@ -13,7 +13,12 @@ import zipfile
 import pandas as pd
 
 from financeiro import (
+    _NOMES_DATA,
+    _NOMES_VALOR,
+    _casa,
     _tag_ofx,
+    converter_datas,
+    converter_valor,
     carregar_arquivo,
     consolidar,
     detectar_colunas,
@@ -101,6 +106,43 @@ def conta_do_arquivo(nome, conteudo, conta):
     return conta
 
 
+_HISTORICO_ALTERNATIVO = ("descri", "histor", "memo", "titulo")
+_CAMPOS = {"data": "Data", "valor": "Valor", "descricao": "Histórico"}
+
+
+def colunas_em_duvida(df, colunas):
+    """{campo: colunas} dos campos (data, valor, histórico) com mais de uma coluna possível.
+
+    Vale o nome da coluna ("Data", "Data pagamento"); sem nenhum nome que case, o conteúdo
+    (a maioria das linhas vira data ou número).
+    """
+    amostra = df.head(30)
+
+    def pelo_nome(prefixos):
+        return [c for c in df.columns if any(_casa(c, p) for p in prefixos)]
+
+    def parece_data(c):
+        v = amostra[c].dropna()
+        texto = v.astype(str)
+        if v.empty or not (texto.str.contains(r"[/-]").mean() > 0.8
+                           or all(hasattr(x, "year") for x in v)):
+            return False
+        return converter_datas(v).notna().mean() > 0.8
+
+    def parece_valor(c):
+        v = amostra[c].dropna()
+        return not v.empty and v.map(converter_valor).notna().mean() > 0.8
+
+    datas = pelo_nome(_NOMES_DATA) or [c for c in df.columns if parece_data(c)]
+    # "Lançamento" + "Detalhes" (BB) se completam e são juntadas; já "Descrição" e
+    # "Histórico" na mesma planilha são alternativas
+    duvidas = {"data": datas, "descricao": pelo_nome(_HISTORICO_ALTERNATIVO)}
+    if not colunas.get("credito"):   # crédito e débito em colunas separadas: não há "valor"
+        duvidas["valor"] = pelo_nome(_NOMES_VALOR) or [
+            c for c in df.columns if c not in datas and parece_valor(c)]
+    return {k: v for k, v in duvidas.items() if len(v) > 1}
+
+
 def importar(arquivos, colunas_por_layout=None):
     """Lê todos os arquivos e devolve (base, leitura, layouts).
 
@@ -109,7 +151,10 @@ def importar(arquivos, colunas_por_layout=None):
         automática de colunas de algum CSV/Excel (o mapeamento é o de detectar_colunas).
     base: DataFrame com COLUNAS_BASE (+ Arquivo), em ordem de conta e data.
     leitura: o que aconteceu com cada arquivo, para mostrar ao usuário.
-    layouts: {tupla de colunas: {"amostra", "colunas", "arquivos"}} dos CSV/Excel lidos.
+    layouts: {tupla de colunas: {"amostra", "colunas", "arquivos", "duvidas"}} dos CSV/Excel
+        lidos. "duvidas" ({campo: colunas possíveis}) fica preenchido quando há mais de uma
+        coluna possível para data, valor ou histórico e ninguém escolheu ainda: esses
+        arquivos só entram na base depois da escolha.
     """
     colunas_por_layout = colunas_por_layout or {}
     leitura, tabelas, layouts = [], [], {}
@@ -142,9 +187,19 @@ def importar(arquivos, colunas_por_layout=None):
             grupos.setdefault(tuple(r["bruto"].columns), []).append((nome, r))
 
     for cols, grupo in grupos.items():
-        colunas = colunas_por_layout.get(cols) or detectar_colunas(grupo[0][1]["bruto"])
-        layouts[cols] = {"amostra": grupo[0][1]["bruto"].head(5), "colunas": colunas,
-                         "arquivos": [n for n, _ in grupo]}
+        bruto = grupo[0][1]["bruto"]
+        escolhido = colunas_por_layout.get(cols)
+        colunas = escolhido or detectar_colunas(bruto)
+        duvidas = {} if escolhido else colunas_em_duvida(bruto, colunas)
+        layouts[cols] = {"amostra": bruto.head(5), "colunas": colunas,
+                         "arquivos": [n for n, _ in grupo], "duvidas": duvidas}
+        if duvidas:
+            pergunta = "; ".join(f"{_CAMPOS[k]}: {' ou '.join(map(str, v))}"
+                                 for k, v in duvidas.items())
+            for nome, r in grupo:
+                leitura.append({"Arquivo": nome, "Banco/Conta": r["conta"],
+                                "Situação": f"escolha a coluna de {pergunta}"})
+            continue
         for nome, r in grupo:
             try:
                 t = montar_transacoes(r["bruto"], colunas,

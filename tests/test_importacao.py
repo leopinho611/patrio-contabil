@@ -77,3 +77,32 @@ def test_numero_da_conta_nubank_vem_do_nome_do_arquivo():
     csv = b"Data,Valor,Identificador,Descri\xc3\xa7\xc3\xa3o\n02/09/2026,-10.00,x,Pix\n"
     base, _, _ = importar([("NU_31098633_01SET2026_30SET2026.csv", csv)])
     assert base["Banco/Conta"].iat[0] == "Nubank 31098633"
+
+
+PLANILHA_CLIENTE = ("Data Emissão;Data Pagamento;Fornecedor;Histórico;Descrição;Valor Bruto;Valor Pago\n"
+                    "02/01/2026;05/01/2026;Padaria Aurora;NF 10;Café da manhã;100,00;98,00\n"
+                    "03/01/2026;06/01/2026;Gráfica Beta;NF 11;Cardápios;50,00;50,00\n").encode()
+
+
+def test_planilha_do_cliente_com_colunas_em_duvida_espera_a_escolha():
+    base, leitura, layouts = importar([("financeiro cliente.csv", PLANILHA_CLIENTE)])
+    assert base.empty
+    (cols, info), = layouts.items()
+    assert info["duvidas"] == {"data": ["Data Emissão", "Data Pagamento"],
+                               "descricao": ["Histórico", "Descrição"],
+                               "valor": ["Valor Bruto", "Valor Pago"]}
+    assert "escolha a coluna de" in leitura["Situação"].iat[0]
+
+    escolha = {"data": "Data Pagamento", "descricao": ["Fornecedor", "Descrição"],
+               "valor": "Valor Pago", "credito": None, "debito": None}
+    base, _, layouts = importar([("financeiro cliente.csv", PLANILHA_CLIENTE)], {cols: escolha})
+    assert layouts[cols]["duvidas"] == {}
+    assert list(base["Valor"]) == [98.0, 50.0]
+    assert str(base["Data"].iat[0])[:10] == "2026-01-05"
+    assert "Padaria Aurora" in base["Descrição"].iat[0]
+
+
+def test_sem_duvida_le_direto():
+    csv = b"Data;Historico;Valor\n05/01/2026;Pix recebido;10,00\n"
+    base, _, layouts = importar([("cliente.csv", csv)])
+    assert len(base) == 1 and not next(iter(layouts.values()))["duvidas"]

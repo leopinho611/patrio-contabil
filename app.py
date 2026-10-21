@@ -59,25 +59,41 @@ with st.expander(f"Arquivos lidos ({len(leitura)})", expanded=base.empty):
 for n, (cols, info) in enumerate(layouts.items()):
     c = info["colunas"]
     completo = c.get("data") and c.get("descricao") and (c.get("valor") or c.get("credito"))
-    with st.expander(f"Colunas de {', '.join(info['arquivos'])}", expanded=not completo):
+    duvidas = info.get("duvidas") or {}
+    with st.expander(f"Colunas de {', '.join(info['arquivos'])}",
+                     expanded=not completo or bool(duvidas)):
+        if duvidas:
+            nomes = {"data": "data", "valor": "valor", "descricao": "histórico"}
+            st.warning("Encontrei mais de uma coluna possível para "
+                       + "; ".join(f"**{nomes[k]}** ({', '.join(map(str, v))})"
+                                   for k, v in duvidas.items())
+                       + ". Escolha abaixo quais usar e clique em **Usar estas colunas**. "
+                       "No histórico, dá para escolher mais de uma: elas são juntadas.")
         opcoes = ["—"] + list(cols)
         idx = lambda k: opcoes.index(c[k]) if c.get(k) in opcoes else 0
         a, b, d, e, f = st.columns(5)
         novo = {
             "data": a.selectbox("Data", opcoes, idx("data"), key=f"d{n}"),
-            "descricao": b.multiselect("Descrição", list(cols), c.get("descricao") or [], key=f"h{n}"),
+            "descricao": b.multiselect("Histórico (descrição)", list(cols), c.get("descricao") or [], key=f"h{n}"),
             "valor": d.selectbox("Valor", opcoes, idx("valor"), key=f"v{n}"),
             "credito": e.selectbox("Crédito", opcoes, idx("credito"), key=f"c{n}"),
             "debito": f.selectbox("Débito", opcoes, idx("debito"), key=f"b{n}"),
         }
         novo = {k: (None if v == "—" else v) for k, v in novo.items()}
         st.dataframe(info["amostra"], width="stretch")
-        if novo != {k: c.get(k) for k in novo}:
+        if duvidas:
+            if st.button("Usar estas colunas", key=f"ok{n}", type="primary"):
+                ajustes[cols] = novo
+                st.rerun()
+        elif novo != {k: c.get(k) for k in novo}:
             ajustes[cols] = novo
             st.rerun()
 
 if base.empty:
-    st.warning("Nenhum lançamento lido.")
+    if any(info.get("duvidas") for info in layouts.values()):
+        st.info("Escolha as colunas acima para ler a planilha.")
+    else:
+        st.warning("Nenhum lançamento lido.")
     st.stop()
 
 contas = sorted(base["Banco/Conta"].unique())
