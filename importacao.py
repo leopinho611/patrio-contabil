@@ -19,6 +19,7 @@ from financeiro import (
     _tag_ofx,
     converter_datas,
     converter_valor,
+    normalizar,
     carregar_arquivo,
     consolidar,
     detectar_colunas,
@@ -44,6 +45,26 @@ def _eh_xlsx(conteudo):
             return "[Content_Types].xml" in z.namelist()
     except zipfile.BadZipFile:
         return False
+
+
+def _eh_html(conteudo):
+    inicio = conteudo[:2048].lstrip().lower()
+    return inicio.startswith((b"<!doctype html", b"<html", b"<table")) or b"<table" in inicio
+
+
+def html_para_csv(conteudo):
+    """Relatório de sistema salvo como .xls que na verdade é uma página HTML (ex.: MGF):
+    a maior tabela da página, em CSV, para seguir pelo mesmo caminho dos outros."""
+    try:
+        texto = conteudo.decode("utf-8")
+    except UnicodeDecodeError:
+        # Alguns sistemas misturam UTF-8 com bytes soltos: o que não decodifica vira "?"
+        texto = conteudo.decode("utf-8", errors="replace").replace("\ufffd", "?")
+    tabelas = pd.read_html(io.StringIO(texto), header=None)
+    if not tabelas:
+        raise ValueError("página HTML sem tabela.")
+    maior = max(tabelas, key=len)
+    return maior.to_csv(sep=";", index=False, header=False).encode("utf-8")
 
 
 def expandir(arquivos, leitura, origem="", nivel=0):
@@ -106,7 +127,11 @@ def conta_do_arquivo(nome, conteudo, conta):
     return conta
 
 
-_HISTORICO_ALTERNATIVO = ("descri", "histor", "memo", "titulo")
+_HISTORICO_ALTERNATIVO = ("descri", "histor", "memo", "titulo", "observ", "fornec",
+                          "favorec", "cliente")
+# Coluna que diz se é entrada ou saída (o valor vem sempre positivo)
+_SENTIDO_ENTRADA = {"entrada", "receita", "credito", "c", "recebimento"}
+_SENTIDO_SAIDA = {"saida", "despesa", "debito", "d", "pagamento"}
 _CAMPOS = {"data": "Data", "valor": "Valor", "descricao": "Histórico"}
 
 
@@ -119,7 +144,8 @@ def colunas_em_duvida(df, colunas):
     amostra = df.head(30)
 
     def pelo_nome(prefixos):
-        return [c for c in df.columns if any(_casa(c, p) for p in prefixos)]
+        return [c for c in df.columns if any(_casa(c, p) for p in prefixos)
+                and not normalizar(c).startswith(("cnpj", "cpf"))]
 
     def parece_data(c):
         v = amostra[c].dropna()
@@ -143,6 +169,33 @@ def colunas_em_duvida(df, colunas):
     return {k: v for k, v in duvidas.items() if len(v) > 1}
 
 
+def coluna_de_sentido(df):
+    """Coluna com ENTRADA/SAIDA (ou C/D, receita/despesa) na maioria das linhas (o resto
+    costuma ser linha de total)."""
+    for c in df.columns:
+        v = df[c].dropna().astype(str).map(normalizar)
+        if len(v) and v.isin(_SENTIDO_ENTRADA | _SENTIDO_SAIDA).mean() > 0.6 \
+                and v.isin(_SENTIDO_SAIDA).any():
+            return c
+    return None
+
+
+def _com_sinal(bruto, colunas):
+    """Valor sempre positivo + coluna de sentido: saídas ficam negativas."""
+    valor, sentido = colunas.get("valor"), coluna_de_sentido(bruto)
+    if not valor or sentido is None:
+        return bruto, None
+    numeros = bruto[valor].map(converter_valor)
+    tipo = bruto[sentido].astype(str).map(normalizar)
+    lancamentos = tipo.isin(_SENTIDO_ENTRADA | _SENTIDO_SAIDA)   # fora as linhas de total
+    if (numeros[lancamentos].dropna() < 0).any():
+        return bruto, None
+    saida = tipo.isin(_SENTIDO_SAIDA)
+    bruto = bruto.copy()
+    bruto[valor] = numeros.where(~saida, -numeros)
+    return bruto, sentido
+
+
 def importar(arquivos, colunas_por_layout=None):
     """Lê todos os arquivos e devolve (base, leitura, layouts).
 
@@ -163,6 +216,13 @@ def importar(arquivos, colunas_por_layout=None):
 
     grupos = {}
     for nome, conteudo in soltos:
+        if not nome.lower().endswith(".pdf") and _eh_html(conteudo):
+            try:
+                conteudo = html_para_csv(conteudo)
+            except ValueError as e:
+                leitura.append({"Arquivo": nome, "Banco/Conta": "—", "Situação": f"ignorado: {e}"})
+                continue
+            nome = nome.rsplit(".", 1)[0] + ".csv"
         try:
             r = carregar_arquivo(nome.rsplit(" › ", 1)[-1], conteudo)
         except SemLancamentos as e:
@@ -201,8 +261,9 @@ def importar(arquivos, colunas_por_layout=None):
                                 "Situação": f"escolha a coluna de {pergunta}"})
             continue
         for nome, r in grupo:
+            bruto, sentido = _com_sinal(r["bruto"], colunas)
             try:
-                t = montar_transacoes(r["bruto"], colunas,
+                t = montar_transacoes(bruto, colunas,
                                       conta_do_arquivo(nome, b"", r["conta"]))
             except ValueError as e:
                 leitura.append({"Arquivo": nome, "Banco/Conta": r["conta"],
@@ -211,7 +272,9 @@ def importar(arquivos, colunas_por_layout=None):
             t["Arquivo"] = nome
             tabelas.append(t)
             leitura.append({"Arquivo": nome, "Banco/Conta": conta_do_arquivo(nome, b"", r["conta"]),
-                            "Situação": f"{len(t)} lançamentos"})
+                            "Situação": f"{len(t)} lançamentos"
+                                        + (f" (entrada/saída pela coluna {sentido})"
+                                           if sentido else "")})
 
     base = planilha_base(consolidar(tabelas))
     return base, pd.DataFrame(leitura, columns=["Arquivo", "Banco/Conta", "Situação"]), layouts

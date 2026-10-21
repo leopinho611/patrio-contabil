@@ -89,7 +89,7 @@ def test_planilha_do_cliente_com_colunas_em_duvida_espera_a_escolha():
     assert base.empty
     (cols, info), = layouts.items()
     assert info["duvidas"] == {"data": ["Data Emissão", "Data Pagamento"],
-                               "descricao": ["Histórico", "Descrição"],
+                               "descricao": ["Fornecedor", "Histórico", "Descrição"],
                                "valor": ["Valor Bruto", "Valor Pago"]}
     assert "escolha a coluna de" in leitura["Situação"].iat[0]
 
@@ -106,3 +106,26 @@ def test_sem_duvida_le_direto():
     csv = b"Data;Historico;Valor\n05/01/2026;Pix recebido;10,00\n"
     base, _, layouts = importar([("cliente.csv", csv)])
     assert len(base) == 1 and not next(iter(layouts.values()))["duvidas"]
+
+
+RELATORIO_HTML = """
+<!DOCTYPE html><html><head><meta charset="utf-8"/><title>Relatório</title></head><body>
+<table><tr><td>Operação</td><td>Descrição</td><td>Valor Pagamento</td><td>Data Pagamento</td>
+<td>CNPJ Fornecedor</td><td>Fornecedor</td><td>Observação</td></tr>
+<tr><td>ENTRADA</td><td>RECEBIMENTOS</td><td>R$ 500,00</td><td>06/04/2026</td><td>1</td>
+<td>CLIENTE ALFA</td><td>PARCELA 1</td></tr>
+<tr><td>SAIDA</td><td>DESPESAS</td><td>R$ 1.200,50</td><td>07/04/2026</td><td>2</td>
+<td>PADARIA AURORA</td><td>CAFE</td></tr>
+<tr><td>Total recebido - total pago:</td><td>R$ -700,50</td><td>R$ -700,50</td><td>R$ -700,50</td>
+<td></td><td></td><td></td></tr></table></body></html>""".encode()
+
+
+def test_relatorio_html_salvo_como_xls_com_coluna_de_entrada_e_saida():
+    base, leitura, layouts = importar([("relatorio.xls", RELATORIO_HTML)])
+    (cols, info), = layouts.items()
+    assert info["duvidas"] == {"descricao": ["Descrição", "Fornecedor", "Observação"]}
+    escolha = dict(info["colunas"], descricao=["Fornecedor", "Observação"])
+    base, leitura, _ = importar([("relatorio.xls", RELATORIO_HTML)], {cols: escolha})
+    assert list(base["Valor"]) == [500.0, -1200.5]
+    assert base["Descrição"].iat[1] == "PADARIA AURORA - CAFE"
+    assert "entrada/saída pela coluna Operação" in leitura["Situação"].iat[0]
