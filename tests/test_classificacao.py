@@ -3,7 +3,7 @@ import io
 import pandas as pd
 
 from classificacao import (HIST_ENTRADA, HIST_SAIDA, bancos_na_matriz, classificar, codigos_na_matriz, ler_contas_bancos, ler_matriz,
-                           parece_matriz, parece_planilha_base, procurar_na_matriz)
+                           linhas_novas_da_matriz, matriz_com_linhas_novas, matriz_mais, nome_para_matriz, parece_matriz, parece_planilha_base, procurar_na_matriz)
 
 CC = "Itaú Ag 1234 Cc 55555-1"
 APLIC = "Itaú Aplic Aut Mais Ag 1234 Cc 55555-1"
@@ -160,3 +160,50 @@ def test_matriz_com_varias_tabelas_lado_a_lado():
     r = classificar(_base([(CC, "COMBUSTIVEL - POSTO X - 999", -50.0),
                            (CC, "TAXA DE ADESAO - CLIENTE Y", 30.0)]), m, CODIGOS)
     assert list(r["Débito"]) == ["328", "100"] and list(r["Crédito"]) == ["100", "557"]
+
+
+def _matriz_varias_tabelas():
+    saida = io.BytesIO()
+    pd.DataFrame([
+        ("PARTICIPANTE", "CONTA", "", "BANCO", "CONTA", "", "DESCRIÇÃO DA RECEITA", "CONTA", "",
+         "DESCRIÇÃO DA DESPESA", "CONTA"),
+        ("PADARIA AURORA", "501", "", "BANCO ALFA", "940", "", "TAXA DE ADESAO", "557", "",
+         "COMBUSTIVEL", "328"),
+        ("", "", "", "BANCO BETA", "846", "", "", "", "", "ALUGUEL", "330"),
+    ]).to_excel(saida, header=False, index=False)
+    return saida.getvalue()
+
+
+def test_nome_para_matriz_pega_a_parte_com_o_nome():
+    assert nome_para_matriz("GRAFICA BETA - 12345678000199 - TARIFA PIX") == "TARIFA PIX"
+    assert nome_para_matriz("PIX ENVIADO FULANO DE TAL 12/04") == "FULANO DE TAL"
+    assert nome_para_matriz("CLIENTE ALFA - 12345678000199") == "CLIENTE ALFA"
+
+
+def test_correcoes_da_tabela_viram_linhas_novas_da_matriz():
+    conteudo = _matriz_varias_tabelas()
+    m = ler_matriz(io.BytesIO(conteudo))
+    classificada = classificar(_base([(CC, "BANCO GAMA - TARIFA PIX", -1.5),
+                                      (CC, "CLIENTE ALFA - MENSALIDADE", 90.0),
+                                      (CC, "POSTO X - COMBUSTIVEL", -50.0)]), m, CODIGOS)
+    corrigida = classificada.copy()
+    corrigida.loc[0, "Débito"] = "360"      # tarifa: não estava na matriz
+    corrigida.loc[1, "Crédito"] = "557"     # mensalidade: idem
+    novas = linhas_novas_da_matriz(classificada, corrigida, m)
+    assert novas.to_dict("records") == [
+        {"Descrição": "TARIFA PIX", "Conta": "360", "Entrada": False},
+        {"Descrição": "MENSALIDADE", "Conta": "557", "Entrada": True}]
+
+    nova = ler_matriz(io.BytesIO(matriz_com_linhas_novas(conteudo, novas)))
+    assert dict(zip(nova["Descrição"], zip(nova["Conta"], nova["Recebimento"]))) == {
+        "PADARIA AURORA": ("501", None), "TAXA DE ADESAO": ("557", True),
+        "MENSALIDADE": ("557", True), "COMBUSTIVEL": ("328", False),
+        "ALUGUEL": ("330", False), "TARIFA PIX": ("360", False)}
+    assert bancos_na_matriz(io.BytesIO(matriz_com_linhas_novas(conteudo, novas))) == {
+        "BANCO ALFA": "940", "BANCO BETA": "846"}
+    # Já na matriz: não repete
+    assert linhas_novas_da_matriz(classificada, corrigida, nova).empty
+
+    # E já vale para os outros lançamentos iguais, antes de gravar a matriz
+    outra = classificar(_base([(CC, "BANCO DELTA - TARIFA PIX", -2.0)]), matriz_mais(m, novas), CODIGOS)
+    assert outra["Débito"].iat[0] == "360"

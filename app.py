@@ -18,7 +18,9 @@ for _modulo in ("financeiro", "leitores_pdf", "importacao", "classificacao"):   
     if _modulo in sys.modules:
         importlib.reload(sys.modules[_modulo])
 
-from classificacao import bancos_na_matriz, classificar, codigos_na_matriz, ler_matriz, parece_matriz, parece_planilha_base
+from classificacao import (bancos_na_matriz, classificar, codigos_na_matriz, ler_matriz,
+                           linhas_novas_da_matriz, matriz_com_linhas_novas, matriz_mais, parece_matriz,
+                           parece_planilha_base)
 from importacao import COLUNAS_BASE, importar, para_excel
 
 st.set_page_config(page_title="Patrio · Planilha base APP", layout="wide")
@@ -219,21 +221,45 @@ with st.sidebar:
         if matrizes and not matriz_enviada:
             st.caption(f"Usando {matrizes[0][0]}, enviada junto com os arquivos.")
 
+com_sentido = lambda b: b.assign(**{"Entrada/Saída": b["Valor"].map(
+    lambda v: "Entrada" if v > 0 else "Saída" if v < 0 else "")})[
+    list(b.columns[:1]) + ["Entrada/Saída"] + list(b.columns[1:])]
+lida = base
 if matriz:
-    base = classificar(base, matriz_df, codigos)
-    prontos = ((base["Débito"] != "") & (base["Crédito"] != "")).sum()
+    base = classificar(lida, matriz_df, codigos)
     achados = (base["Conta na matriz"] != "").sum()
     if not any(codigos.values()):
         st.warning(f"A matriz achou a conta de {achados} de {len(base)} lançamentos. Preencha o "
                    "código de cada conta na barra lateral para completar o lado do banco.")
     else:
-        st.info(f"{prontos} de {len(base)} lançamentos com débito e crédito. "
-                "O motivo dos outros está na coluna Conferir.")
+        resumo = st.empty()   # preenchido depois das correções feitas na tabela
 else:
     st.info("Envie a planilha matriz para preencher débito, crédito e histórico.")
+base = com_sentido(base)
 
-base.insert(base.columns.get_loc("Data"), "Entrada/Saída",
-            base["Valor"].map(lambda v: "Entrada" if v > 0 else "Saída" if v < 0 else ""))
+# Correções feitas na tabela: guardadas por lançamento, para não sumirem ao trocar o filtro
+classificada = base.copy()
+assinatura = hash((tuple((n, len(c)) for n, c in arquivos), VERSAO))
+correcoes = st.session_state.setdefault("correcoes", {}).setdefault(assinatura, {})
+EDITAVEIS = ["Débito", "Crédito", "Histórico"]
+
+
+def corrigir(b):
+    for i, valores in correcoes.items():
+        if i in b.index:
+            b.loc[i, EDITAVEIS] = valores
+    return b
+
+
+base = corrigir(base)
+# O que foi corrigido vira linha nova da matriz, e já vale para os lançamentos iguais
+novas = linhas_novas_da_matriz(classificada, base, matriz_df) if matriz else None
+if novas is not None and len(novas):
+    base = corrigir(com_sentido(classificar(lida, matriz_mais(matriz_df, novas), codigos)))
+if matriz and any(codigos.values()):
+    prontos = ((base["Débito"] != "") & (base["Crédito"] != "")).sum()
+    resumo.info(f"{prontos} de {len(base)} lançamentos com débito e crédito. "
+                "O motivo dos outros está na coluna Conferir.")
 
 # Filtros da tabela
 f_contas, f_tipo, f_situacao, f_busca = st.columns([3, 1.3, 1.5, 2.5])
@@ -262,7 +288,31 @@ editada = st.data_editor(
     column_config={"Data": st.column_config.DateColumn(format="DD/MM/YYYY"),
                    "Valor": st.column_config.NumberColumn(format="%.2f")},
 )
-base.loc[vista.index, ["Débito", "Crédito", "Histórico"]] = editada[["Débito", "Crédito", "Histórico"]].values
+editada.index = vista.index
+texto = lambda df: df[EDITAVEIS].fillna("").astype(str).apply(lambda c: c.str.strip())
+mudou = (texto(editada) != texto(base.loc[vista.index])).any(axis=1)
+mudou = list(mudou[mudou].index)
+if mudou:
+    for i in mudou:
+        correcoes[i] = list(texto(editada).loc[i])
+    st.rerun()
 
-st.download_button("Baixar planilha base (.xlsx)", para_excel(base), "planilha_base.xlsx",
-                   "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+XLSX = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+baixar_base, baixar_matriz = st.columns(2)
+baixar_base.download_button("Baixar planilha base (.xlsx)", para_excel(base),
+                            "planilha_base.xlsx", XLSX, width="stretch")
+# As linhas novas na matriz da empresa: no próximo mês já sai classificado
+if novas is not None and len(novas):
+    nome_matriz = matriz_enviada.name if matriz_enviada else matrizes[0][0]
+    if matriz[:4] == b"PK\x03\x04":
+        baixar_matriz.download_button(
+            f"Baixar matriz com {len(novas)} linha(s) nova(s)",
+            matriz_com_linhas_novas(matriz, novas), nome_matriz.rsplit(".", 1)[0] + ".xlsx",
+            XLSX, width="stretch", type="primary",
+            help="Inclui as contas que você corrigiu ou preencheu na tabela. "
+                 "Substitua a matriz da empresa por esta.")
+    else:
+        baixar_matriz.caption("Para gravar as correções na matriz, salve-a como .xlsx.")
+    with st.expander(f"Linhas novas da matriz ({len(novas)})"):
+        st.dataframe(novas.assign(Entrada=novas["Entrada"].map({True: "Receita", False: "Despesa"}))
+                     .rename(columns={"Entrada": "Tabela"}), hide_index=True, width="stretch")

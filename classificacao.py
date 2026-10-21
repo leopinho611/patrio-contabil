@@ -84,22 +84,30 @@ def _tabelas_da_matriz(arquivo):
     "banco", "receita", "despesa" ou "" (vale para os dois sentidos)."""
     bruto = pd.read_excel(arquivo, header=None, dtype=str).fillna("")
     bruto = bruto.map(lambda v: _conserta(str(v).strip()))
+    linha, pares = _cabecalho_da_matriz(bruto)
+    if pares:
+        tabelas = []
+        for tipo, j in pares:
+            t = bruto.iloc[linha + 1:, [j - 1, j]]
+            t.columns = ["Descrição", "Conta"]
+            tabelas.append((tipo, t))
+        return tabelas
+    t = bruto.iloc[:, :2].copy()
+    t.columns = ["Descrição", "Conta"]
+    return [(None, t)]
+
+
+def _cabecalho_da_matriz(bruto):
+    """(linha do cabeçalho, [(tipo, coluna da CONTA)]) da matriz com várias tabelas, ou
+    (None, []) quando é uma tabela só."""
     for linha in range(min(len(bruto), 10)):
         cab = [_sem_acento(v) for v in bruto.iloc[linha]]
         pares = [j for j in range(1, len(cab)) if cab[j].startswith("conta") and cab[j - 1]]
         if len(pares) > 1:
-            tabelas = []
-            for j in pares:
-                nome = cab[j - 1]
-                tipo = ("banco" if nome.startswith("banco") else "receita" if "receita" in nome
-                        else "despesa" if "despesa" in nome else "")
-                t = bruto.iloc[linha + 1:, [j - 1, j]]
-                t.columns = ["Descrição", "Conta"]
-                tabelas.append((tipo, t))
-            return tabelas
-    t = bruto.iloc[:, :2].copy()
-    t.columns = ["Descrição", "Conta"]
-    return [(None, t)]
+            return linha, [("banco" if cab[j - 1].startswith("banco") else
+                            "receita" if "receita" in cab[j - 1] else
+                            "despesa" if "despesa" in cab[j - 1] else "", j) for j in pares]
+    return None, []
 
 
 def ler_matriz(arquivo):
@@ -355,3 +363,68 @@ def classificar(base, matriz, contas_bancos):
     b["Débito"], b["Crédito"], b["Histórico"] = debitos, creditos, historicos
     b["Conta na matriz"], b["Conferir"] = origens, conferir
     return b
+
+
+def nome_para_matriz(descricao):
+    """Texto a gravar numa linha nova da matriz: a parte do histórico com o nome (a última,
+    sem prefixos como "PIX ENVIADO" e sem CNPJ ou data)."""
+    d = re.sub(r"\s*\d{2}/\d{2}$", "", str(descricao).strip())
+    d = re.sub(r"\s+\d{2,3}/\d{2,3}$", "", d)
+    for parte in reversed(d.split(" - ")):
+        parte = _PREFIXOS_EXTRATO.sub("", parte).strip(" -:")
+        if parte and not re.fullmatch(r"[\d./-]+", parte):
+            return parte
+    return d
+
+
+def linhas_novas_da_matriz(classificada, corrigida, matriz):
+    """Lançamentos em que a conta do fornecedor/cliente foi corrigida ou preenchida à mão e
+    que a matriz ainda não conhece: DataFrame com Descrição, Conta e Entrada (bool)."""
+    linhas = []
+    for i in corrigida.index:
+        entrada = corrigida.at[i, "Valor"] > 0
+        lado = "Crédito" if entrada else "Débito"
+        conta = str(corrigida.at[i, lado]).strip()
+        if not conta or conta == str(classificada.at[i, lado]).strip():
+            continue
+        linhas.append({"Descrição": nome_para_matriz(corrigida.at[i, "Descrição"]),
+                       "Conta": conta, "Entrada": bool(entrada)})
+    novas = pd.DataFrame(linhas, columns=["Descrição", "Conta", "Entrada"])
+    novas = novas.drop_duplicates(["Descrição", "Entrada"], keep="last")
+    if matriz is not None and len(novas):
+        ja = {(_sem_acento(d), r) for d, r in zip(matriz["Descrição"], matriz["Recebimento"])}
+        novas = novas[[(_sem_acento(d), e) not in ja and (_sem_acento(d), None) not in ja
+                       for d, e in zip(novas["Descrição"], novas["Entrada"])]]
+    return novas.reset_index(drop=True)
+
+
+def matriz_com_linhas_novas(conteudo, novas):
+    """A planilha matriz (.xlsx) com as linhas novas no fim da tabela certa: entradas na de
+    receita, saídas na de despesa (sem essas, na de participantes ou na tabela única)."""
+    import openpyxl
+    livro = openpyxl.load_workbook(io.BytesIO(conteudo))
+    aba = livro.worksheets[0]
+    bruto = pd.read_excel(io.BytesIO(conteudo), header=None, dtype=str).fillna("")
+    linha, pares = _cabecalho_da_matriz(bruto)
+    colunas = {tipo: j for tipo, j in reversed(pares)}   # a primeira de cada tipo
+    for _, n in novas.iterrows():
+        outras = [j for tipo, j in pares if tipo != "banco"]
+        j = colunas.get("receita" if n["Entrada"] else "despesa",
+                        colunas.get("", outras[0] if outras else 1))
+        col_desc, col_conta = j, j + 1                     # openpyxl conta a partir de 1
+        ultima = max((c.row for c in aba[openpyxl.utils.get_column_letter(col_desc)]
+                      if c.value not in (None, "")), default=0)
+        conta = int(n["Conta"]) if str(n["Conta"]).isdigit() else n["Conta"]
+        aba.cell(ultima + 1, col_desc, n["Descrição"])
+        aba.cell(ultima + 1, col_conta, conta)
+    saida = io.BytesIO()
+    livro.save(saida)
+    return saida.getvalue()
+
+
+def matriz_mais(matriz, novas):
+    """A matriz lida mais as linhas novas (ainda não gravadas no arquivo)."""
+    extra = pd.DataFrame({"Descrição": novas["Descrição"], "Conta": novas["Conta"].astype(str),
+                          "Recebimento": novas["Entrada"].astype(object)})
+    extra["Nome"] = extra["Descrição"].map(_nome_na_matriz)
+    return pd.concat([matriz, extra], ignore_index=True)
