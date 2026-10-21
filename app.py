@@ -17,7 +17,7 @@ for _modulo in ("financeiro", "leitores_pdf", "importacao", "classificacao"):   
     if _modulo in sys.modules:
         importlib.reload(sys.modules[_modulo])
 
-from classificacao import classificar, codigos_na_matriz, ler_matriz, parece_matriz, parece_planilha_base
+from classificacao import bancos_na_matriz, classificar, codigos_na_matriz, ler_matriz, parece_matriz, parece_planilha_base
 from importacao import COLUNAS_BASE, importar, para_excel
 
 st.set_page_config(page_title="Patrio · Planilha base", layout="wide")
@@ -39,7 +39,8 @@ def ler(arquivos, ajustes):
 
 @st.cache_data(max_entries=3)
 def matriz_lida(conteudo):
-    return ler_matriz(io.BytesIO(conteudo)), codigos_na_matriz(io.BytesIO(conteudo))
+    return (ler_matriz(io.BytesIO(conteudo)), codigos_na_matriz(io.BytesIO(conteudo)),
+            bancos_na_matriz(io.BytesIO(conteudo)))
 
 
 arquivos = [(f.name, f.getvalue()) for f in enviados]
@@ -110,7 +111,7 @@ with st.sidebar:
     matriz = matriz_enviada.getvalue() if matriz_enviada else (matrizes[0][1] if matrizes else None)
     if matrizes and not matriz_enviada:
         st.caption(f"Usando a matriz enviada junto com os arquivos: {matrizes[0][0]}")
-    matriz_df, codigos_matriz = matriz_lida(matriz) if matriz else (None, {})
+    matriz_df, codigos_matriz, bancos = matriz_lida(matriz) if matriz else (None, {}, {})
     st.markdown("**Código contábil de cada conta**")
     if codigos_matriz:
         st.caption("Preenchidos pela matriz.")
@@ -119,7 +120,18 @@ with st.sidebar:
         chave = f"codigo {conta}"
         if not st.session_state.get(chave) and codigos_matriz.get(conta):
             st.session_state[chave] = codigos_matriz[conta]
-        codigos[conta] = st.text_input(conta, key=chave).strip()
+        if bancos and not codigos_matriz.get(conta):
+            # A matriz traz a tabela BANCO | CONTA: escolhe o banco desta conta
+            opcoes = ["—"] + [f"{b} · {c}" for b, c in bancos.items()] + ["Outro código"]
+            parecido = [i + 1 for i, b in enumerate(bancos) if b.lower() in conta.lower()]
+            escolha = st.selectbox(conta, opcoes, index=parecido[0] if parecido else 0,
+                                   key=f"banco {conta}")
+            if escolha == "Outro código":
+                codigos[conta] = st.text_input(f"Código de {conta}", key=chave).strip()
+            else:
+                codigos[conta] = escolha.rsplit(" · ", 1)[-1] if escolha != "—" else ""
+        else:
+            codigos[conta] = st.text_input(conta, key=chave).strip()
 
     # Histórico das planilhas do cliente: dá para trocar a qualquer momento
     for n, (cols, info) in enumerate(layouts.items()):

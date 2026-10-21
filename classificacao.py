@@ -59,18 +59,77 @@ def _tokens(texto):
     return [p for p in palavras if p not in _VAZIAS and not p.isdigit()]
 
 
+def _conserta(texto):
+    """Desfaz acento quebrado de planilha que passou por outra codificação
+    ("SERVIÃ‡O" -> "SERVIÇO")."""
+    if "Ã" not in texto and "Â" not in texto:
+        return texto
+
+    def byte(c):   # cp1252 cobre "“" (0x93); os bytes que ele não tem (0x81, 0x8d) vêm crus
+        try:
+            return c.encode("cp1252")
+        except UnicodeEncodeError:
+            return c.encode("latin-1") if ord(c) < 256 else c.encode("utf-8")
+    try:
+        return b"".join(byte(c) for c in texto).decode("utf-8")
+    except UnicodeDecodeError:
+        return texto
+
+
+def _tabelas_da_matriz(arquivo):
+    """Pares (descrição, conta) da primeira aba. A matriz pode ter uma tabela só (descrição
+    e conta nas colunas A e B) ou várias lado a lado, cada uma com cabeçalho próprio:
+    PARTICIPANTE | CONTA, BANCO | CONTA, DESCRIÇÃO DA RECEITA | CONTA, DESCRIÇÃO DA
+    DESPESA | CONTA. Devolve [(tipo, DataFrame com Descrição e Conta)], com tipo
+    "banco", "receita", "despesa" ou "" (vale para os dois sentidos)."""
+    bruto = pd.read_excel(arquivo, header=None, dtype=str).fillna("")
+    bruto = bruto.map(lambda v: _conserta(str(v).strip()))
+    for linha in range(min(len(bruto), 10)):
+        cab = [_sem_acento(v) for v in bruto.iloc[linha]]
+        pares = [j for j in range(1, len(cab)) if cab[j].startswith("conta") and cab[j - 1]]
+        if len(pares) > 1:
+            tabelas = []
+            for j in pares:
+                nome = cab[j - 1]
+                tipo = ("banco" if nome.startswith("banco") else "receita" if "receita" in nome
+                        else "despesa" if "despesa" in nome else "")
+                t = bruto.iloc[linha + 1:, [j - 1, j]]
+                t.columns = ["Descrição", "Conta"]
+                tabelas.append((tipo, t))
+            return tabelas
+    t = bruto.iloc[:, :2].copy()
+    t.columns = ["Descrição", "Conta"]
+    return [(None, t)]
+
+
 def ler_matriz(arquivo):
-    """Planilha matriz -> DataFrame com Descrição, Conta, Nome (tokens do nome)."""
-    bruto = pd.read_excel(arquivo, header=None, dtype=str).iloc[:, :2]
-    bruto.columns = ["Descrição", "Conta"]
-    bruto = bruto.dropna(subset=["Descrição"])
-    bruto["Descrição"] = bruto["Descrição"].str.strip()
-    bruto["Conta"] = bruto["Conta"].fillna("").str.strip().str.replace(r"\.0$", "", regex=True)
-    cabecalho = bruto["Conta"].str.lower().str.startswith("conta cont")
-    m = bruto[~cabecalho & (bruto["Conta"] != "")].copy()
+    """Planilha matriz -> DataFrame com Descrição, Conta, Nome (tokens do nome) e
+    Recebimento (True: linha de entrada; False: de saída; None: serve para os dois)."""
+    partes = []
+    for tipo, t in _tabelas_da_matriz(arquivo):
+        if tipo == "banco":
+            continue
+        t = t.copy()
+        t["Conta"] = t["Conta"].str.replace(r"\.0$", "", regex=True)
+        cabecalho = t["Conta"].str.lower().str.startswith("conta cont")
+        t = t[~cabecalho & (t["Descrição"] != "") & (t["Conta"] != "")]
+        if tipo is None:   # tabela única: o sentido vem do texto ("Depósito ...", "PIX RECEPÇÃO")
+            t["Recebimento"] = t["Descrição"].str.match(_RECEBIMENTO)
+        else:
+            t["Recebimento"] = {"receita": True, "despesa": False}.get(tipo)
+        partes.append(t)
+    m = pd.concat(partes, ignore_index=True)
     m["Nome"] = m["Descrição"].map(_nome_na_matriz)
-    m["Recebimento"] = m["Descrição"].str.match(_RECEBIMENTO)
     return m.reset_index(drop=True)
+
+
+def bancos_na_matriz(arquivo):
+    """{banco: conta} da tabela BANCO | CONTA da matriz, quando ela existe."""
+    for tipo, t in _tabelas_da_matriz(arquivo):
+        if tipo == "banco":
+            t = t[(t["Descrição"] != "") & (t["Conta"] != "")]
+            return dict(zip(t["Descrição"], t["Conta"].str.replace(r"\.0$", "", regex=True)))
+    return {}
 
 
 def parece_matriz(nome, conteudo):
@@ -188,7 +247,8 @@ def procurar_na_matriz(descricao, matriz, minimo=0.75, entrada=None):
     iguais = [i for i in melhores if matriz.at[i, "Nome"] == nome]
     melhores = iguais or melhores
     if entrada is not None and "Recebimento" in matriz:
-        mesmo_sentido = [i for i in melhores if bool(matriz.at[i, "Recebimento"]) == entrada]
+        mesmo_sentido = [i for i in melhores if matriz.at[i, "Recebimento"] is None
+                         or bool(matriz.at[i, "Recebimento"]) == entrada]
         melhores = mesmo_sentido or melhores
     contas = matriz.loc[melhores, "Conta"]
     votos = contas.value_counts()

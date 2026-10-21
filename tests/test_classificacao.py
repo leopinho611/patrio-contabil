@@ -2,7 +2,7 @@ import io
 
 import pandas as pd
 
-from classificacao import (HIST_ENTRADA, HIST_SAIDA, classificar, codigos_na_matriz, ler_contas_bancos, ler_matriz,
+from classificacao import (HIST_ENTRADA, HIST_SAIDA, bancos_na_matriz, classificar, codigos_na_matriz, ler_contas_bancos, ler_matriz,
                            parece_matriz, parece_planilha_base, procurar_na_matriz)
 
 CC = "Itaú Ag 1234 Cc 55555-1"
@@ -138,3 +138,25 @@ def test_historico_com_varias_partes_procura_o_fornecedor_em_cada_uma():
     # Parte que só começa igual não vale ("TRANSF CC PARA CC PJ" não é "TRANSF ENTRE CONTAS")
     m = _matriz([("Transf Entre Contas - BANCO ALFA", "1482")])
     assert procurar_na_matriz("TRANSF CC PARA CC PJ - FULANO DE TAL", m)[0] is None
+
+
+def test_matriz_com_varias_tabelas_lado_a_lado():
+    saida = io.BytesIO()
+    pd.DataFrame([
+        ("DESCRIÇÃO/PARTICIPANTE", "CONTA CONTÁBIL", "", "BANCO", "CONTA", "",
+         "DESCRIÇÃO DA RECEITA", "CONTA CONTÁBIL", "", "DESCRIÇÃO DA DESPESA", "CONTA CONTÁBIL"),
+        ("PADARIA AURORA - 12345678000199", "501", "", "BANCO ALFA", "940", "",
+         "TAXA DE ADESAO", "557", "", "SERVIÃ‡O DE LIMPEZA", "964"),
+        ("", "", "", "BANCO BETA", "846", "", "", "", "", "COMBUSTIVEL", "328"),
+    ]).to_excel(saida, header=False, index=False)
+    saida.seek(0)
+    m = ler_matriz(saida)
+    assert dict(zip(m["Descrição"], m["Conta"])) == {
+        "PADARIA AURORA - 12345678000199": "501", "TAXA DE ADESAO": "557",
+        "SERVIÇO DE LIMPEZA": "964", "COMBUSTIVEL": "328"}
+    assert list(m["Recebimento"]) == [None, True, False, False]
+    saida.seek(0)
+    assert bancos_na_matriz(saida) == {"BANCO ALFA": "940", "BANCO BETA": "846"}
+    r = classificar(_base([(CC, "COMBUSTIVEL - POSTO X - 999", -50.0),
+                           (CC, "TAXA DE ADESAO - CLIENTE Y", 30.0)]), m, CODIGOS)
+    assert list(r["Débito"]) == ["328", "100"] and list(r["Crédito"]) == ["100", "557"]
