@@ -282,6 +282,7 @@ def importar(arquivos, colunas_por_layout=None):
             # Histórico não é perguntado: vai a sugestão, que pode ser trocada depois
             if duvidas.pop("descricao", None):
                 colunas = dict(colunas, descricao=historico_sugerido(bruto, colunas))
+        if "banco" not in colunas:   # escolha feita antes de existir a coluna do banco
             colunas = dict(colunas, banco=coluna_de_banco(bruto))
         layouts[cols] = {"amostra": bruto.head(5), "colunas": colunas,
                          "arquivos": [n for n, _ in grupo], "duvidas": duvidas}

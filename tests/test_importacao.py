@@ -148,3 +148,11 @@ def test_planilha_com_coluna_do_banco_separa_as_contas():
     assert contas == {500.0: "BANCO GAMA - CONTA 1", -120.5: "BANCO DELTA",
                       -30.0: "financeiro (sem banco)"}
     assert leitura["Banco/Conta"].iat[0] == "pela coluna Banco"
+
+
+def test_escolha_antiga_sem_banco_ainda_acha_a_coluna_do_banco():
+    _, _, layouts = importar([("financeiro.csv", RELATORIO_COM_BANCO)])
+    (cols, info), = layouts.items()
+    antiga = {k: v for k, v in info["colunas"].items() if k != "banco"}
+    base, _, _ = importar([("financeiro.csv", RELATORIO_COM_BANCO)], {cols: antiga})
+    assert "BANCO DELTA" in set(base["Banco/Conta"])

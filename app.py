@@ -42,13 +42,19 @@ enviados = st.file_uploader(
 if not enviados:
     st.stop()
 
+# Versão do código de leitura: entra na chave do cache, senão, depois de uma atualização,
+# os mesmos arquivos continuam com a leitura antiga guardada
+VERSAO = hash(tuple(open(os.path.join(os.path.dirname(os.path.abspath(__file__)), m), "rb").read()
+                    for m in ("financeiro.py", "leitores_pdf.py", "importacao.py", "classificacao.py")))
+
+
 @st.cache_data(show_spinner="Lendo os arquivos...", max_entries=3)
-def ler(arquivos, ajustes):
+def ler(arquivos, ajustes, versao):
     return importar(arquivos, ajustes)
 
 
 @st.cache_data(max_entries=3)
-def matriz_lida(conteudo):
+def matriz_lida(conteudo, versao):
     return (ler_matriz(io.BytesIO(conteudo)), codigos_na_matriz(io.BytesIO(conteudo)),
             bancos_na_matriz(io.BytesIO(conteudo)))
 
@@ -74,7 +80,7 @@ for nome, conteudo in [a for a in arquivos if parece_planilha_base(*a)]:
                "Para classificar, envie a planilha matriz (descrição e conta contábil).")
     arquivos.remove((nome, conteudo))
 ajustes = st.session_state.setdefault("ajustes", {})
-base, leitura, layouts = ler(arquivos, ajustes)
+base, leitura, layouts = ler(arquivos, ajustes, VERSAO)
 base = base.copy()
 
 # "Arquivos lidos" e as colunas das planilhas lado a lado
@@ -166,7 +172,7 @@ with st.sidebar:
 
     matriz_enviada = st.session_state.get("matriz")
     matriz = matriz_enviada.getvalue() if matriz_enviada else (matrizes[0][1] if matrizes else None)
-    matriz_df, codigos_matriz, bancos = matriz_lida(matriz) if matriz else (None, {}, {})
+    matriz_df, codigos_matriz, bancos = matriz_lida(matriz, VERSAO) if matriz else (None, {}, {})
 
     curtos = nomes_curtos(list(contas) + list(bancos))
     opcoes_banco = {"—": ""} | {f"{c} · {curtos[b]}": c for b, c in bancos.items()}
