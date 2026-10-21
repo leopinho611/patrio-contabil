@@ -119,17 +119,26 @@ def _nome_na_matriz(descricao):
     return tuple(_tokens(d))
 
 
-def _nome_no_extrato(descricao):
+def _nomes_no_extrato(descricao):
+    """Nomes a procurar na matriz, do mais provável ao menos. O nome costuma ser a última
+    parte ("TRANSFERENCIA PIX - REM: FULANO"); nas planilhas do cliente o histórico junta
+    várias colunas ("CATEGORIA - FORNECEDOR - CNPJ"), e aí vale tentar cada parte."""
     d = re.sub(r"\s*\d{2}/\d{2}$", "", descricao.strip())     # data do Pix no fim
     d = re.sub(r"\s+\d{2,3}/\d{2,3}$", "", d)                   # parcela do cartão
     for padrao, apelido in _APELIDOS:
         m = re.search(padrao, _sem_acento(d))
         if m:
-            return tuple(_tokens(m.expand(apelido)))
+            return [tuple(_tokens(m.expand(apelido)))]
     partes = d.split(" - ")
-    alvo = partes[-1] if len(partes) > 1 else d
-    alvo = _PREFIXOS_EXTRATO.sub("", alvo)
-    return tuple(_tokens(alvo))
+    nomes = [tuple(_tokens(_PREFIXOS_EXTRATO.sub("", p))) for p in reversed(partes)]
+    if len(partes) > 1:
+        nomes.append(tuple(_tokens(d)))
+    return [n for n in dict.fromkeys(nomes) if n]
+
+
+def _nome_no_extrato(descricao):
+    nomes = _nomes_no_extrato(descricao)
+    return nomes[0] if nomes else ()
 
 
 def _casa(a, b, cortado):
@@ -163,12 +172,17 @@ def procurar_na_matriz(descricao, matriz, minimo=0.75, entrada=None):
 
     entrada: True/False para preferir as linhas da matriz do mesmo sentido (o mesmo cliente
     aparece como "Depósito ... - EUROPLUS" e o fornecedor como "EUROPLUS - ...")."""
-    nome = _nome_no_extrato(descricao)
-    if not nome:
+    nomes = _nomes_no_extrato(descricao)
+    if not nomes:
         return None, "", "sem nome do fornecedor no extrato"
-    notas = [(_pontua(nome, n), i) for i, n in enumerate(matriz["Nome"])]
-    maior = max((s for s, _ in notas), default=0)
-    if maior < minimo:
+    for k, nome in enumerate(nomes):
+        notas = [(_pontua(nome, n), i) for i, n in enumerate(matriz["Nome"])]
+        maior = max((s for s, _ in notas), default=0)
+        # As outras partes só valem se casarem por inteiro ("TRANSF CC PARA CC PJ" não é
+        # "TRANSF ENTRE CONTAS")
+        if maior >= (minimo if k == 0 else 1.0):
+            break
+    else:
         return None, "", "não achei na matriz"
     melhores = [i for s, i in notas if s == maior]   # só os que casaram melhor votam
     iguais = [i for i in melhores if matriz.at[i, "Nome"] == nome]

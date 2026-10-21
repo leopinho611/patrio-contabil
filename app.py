@@ -21,12 +21,14 @@ from classificacao import classificar, codigos_na_matriz, ler_matriz, parece_mat
 from importacao import COLUNAS_BASE, importar, para_excel
 
 st.set_page_config(page_title="Patrio · Planilha base", layout="wide")
-st.title("Planilha base")
-st.caption("Envie os arquivos do banco e do cliente (zip, OFX, PDF, CSV ou Excel). "
-           "Tudo é lido na memória e descartado ao fechar a página.")
+# Menos espaço antes da tabela: título pequeno e topo da página mais curto
+st.markdown("<style>.block-container{padding-top:1.5rem}</style>", unsafe_allow_html=True)
+st.markdown("#### Planilha base")
 
-enviados = st.file_uploader("Arquivos", accept_multiple_files=True,
-                            type=["zip", "ofx", "pdf", "csv", "txt", "xlsx", "xls", "excel", "htm", "html"])
+enviados = st.file_uploader(
+    "Arquivos do banco e do cliente (zip, OFX, PDF, CSV ou Excel), com a planilha matriz. "
+    "Tudo é lido na memória e descartado ao fechar a página.", accept_multiple_files=True,
+    type=["zip", "ofx", "pdf", "csv", "txt", "xlsx", "xls", "excel", "htm", "html"])
 if not enviados:
     st.stop()
 
@@ -72,12 +74,13 @@ for n, (cols, info) in enumerate(layouts.items()):
         opcoes = ["—"] + list(cols)
         idx = lambda k: opcoes.index(c[k]) if c.get(k) in opcoes else 0
         a, b, d, e, f = st.columns(5)
+        v = abs(hash(repr(c)))   # widgets recomeçam quando a escolha muda (ex.: pela barra lateral)
         novo = {
-            "data": a.selectbox("Data", opcoes, idx("data"), key=f"d{n}"),
-            "descricao": b.multiselect("Histórico (descrição)", list(cols), c.get("descricao") or [], key=f"h{n}"),
-            "valor": d.selectbox("Valor", opcoes, idx("valor"), key=f"v{n}"),
-            "credito": e.selectbox("Crédito", opcoes, idx("credito"), key=f"c{n}"),
-            "debito": f.selectbox("Débito", opcoes, idx("debito"), key=f"b{n}"),
+            "data": a.selectbox("Data", opcoes, idx("data"), key=f"d{n}-{v}"),
+            "descricao": b.multiselect("Histórico (descrição)", list(cols), c.get("descricao") or [], key=f"h{n}-{v}"),
+            "valor": d.selectbox("Valor", opcoes, idx("valor"), key=f"v{n}-{v}"),
+            "credito": e.selectbox("Crédito", opcoes, idx("credito"), key=f"c{n}-{v}"),
+            "debito": f.selectbox("Débito", opcoes, idx("debito"), key=f"b{n}-{v}"),
         }
         novo = {k: (None if v == "—" else v) for k, v in novo.items()}
         st.dataframe(info["amostra"], width="stretch")
@@ -98,31 +101,45 @@ if base.empty:
 
 contas = sorted(base["Banco/Conta"].unique())
 
-st.subheader("Lançamentos contábeis")
-st.caption("Saída do banco: débito no fornecedor, crédito no banco. Entrada: débito no banco, "
-           "crédito no cliente. A conta do fornecedor ou cliente vem da planilha matriz.")
-matriz_enviada = st.file_uploader("Planilha matriz", type=["xlsx", "xls"], key="matriz")
-matriz = matriz_enviada.getvalue() if matriz_enviada else (matrizes[0][1] if matrizes else None)
-if matrizes and not matriz_enviada:
-    st.caption(f"Usando a matriz enviada junto com os extratos: {matrizes[0][0]}")
-st.write("Código contábil de cada conta (banco, aplicação, cartão):")
-matriz_df, codigos_matriz = matriz_lida(matriz) if matriz else (None, {})
-if codigos_matriz:
-    st.caption("Códigos preenchidos pela aba Banco/Conta e Código da matriz.")
-codigos = {}
-colunas = st.columns(2)
-for n, conta in enumerate(contas):
-    chave = f"codigo {conta}"
-    if not st.session_state.get(chave) and codigos_matriz.get(conta):
-        st.session_state[chave] = codigos_matriz[conta]
-    codigos[conta] = colunas[n % 2].text_input(conta, key=chave).strip()
+# Classificação na barra lateral, para a tabela aparecer logo abaixo dos arquivos
+with st.sidebar:
+    st.markdown("#### Lançamentos contábeis")
+    st.caption("Saída: débito no fornecedor, crédito no banco. Entrada: débito no banco, "
+               "crédito no cliente. A conta do fornecedor ou cliente vem da planilha matriz.")
+    matriz_enviada = st.file_uploader("Planilha matriz", type=["xlsx", "xls"], key="matriz")
+    matriz = matriz_enviada.getvalue() if matriz_enviada else (matrizes[0][1] if matrizes else None)
+    if matrizes and not matriz_enviada:
+        st.caption(f"Usando a matriz enviada junto com os arquivos: {matrizes[0][0]}")
+    matriz_df, codigos_matriz = matriz_lida(matriz) if matriz else (None, {})
+    st.markdown("**Código contábil de cada conta**")
+    if codigos_matriz:
+        st.caption("Preenchidos pela matriz.")
+    codigos = {}
+    for conta in contas:
+        chave = f"codigo {conta}"
+        if not st.session_state.get(chave) and codigos_matriz.get(conta):
+            st.session_state[chave] = codigos_matriz[conta]
+        codigos[conta] = st.text_input(conta, key=chave).strip()
+
+    # Histórico das planilhas do cliente: dá para trocar a qualquer momento
+    for n, (cols, info) in enumerate(layouts.items()):
+        if info.get("duvidas"):
+            continue
+        atual = info["colunas"].get("descricao") or []
+        escolha = st.multiselect(f"Histórico de {', '.join(info['arquivos'])}", list(cols),
+                                 atual, key=f"hist{n}-{abs(hash(repr(info['colunas'])))}",
+                                 help="Colunas juntadas para formar o histórico.")
+        if escolha and escolha != atual:
+            ajustes[cols] = dict(info["colunas"], descricao=escolha)
+            st.rerun()
+
 if matriz:
     base = classificar(base, matriz_df, codigos)
     prontos = ((base["Débito"] != "") & (base["Crédito"] != "")).sum()
     achados = (base["Conta na matriz"] != "").sum()
     if not any(codigos.values()):
         st.warning(f"A matriz achou a conta de {achados} de {len(base)} lançamentos. Preencha o "
-                   "código de cada conta acima para completar o lado do banco.")
+                   "código de cada conta na barra lateral para completar o lado do banco.")
     else:
         st.info(f"{prontos} de {len(base)} lançamentos com débito e crédito. "
                 "O motivo dos outros está na coluna Conferir.")

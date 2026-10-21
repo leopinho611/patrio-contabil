@@ -130,3 +130,11 @@ def test_codigos_das_contas_numa_aba_da_matriz():
     assert codigos_na_matriz(saida) == {CC: "100"}
     saida.seek(0)
     assert len(ler_matriz(saida)) == 1
+
+
+def test_historico_com_varias_partes_procura_o_fornecedor_em_cada_uma():
+    # Planilha do cliente: CATEGORIA - FORNECEDOR - CNPJ
+    assert procurar_na_matriz("MATERIAL DE USO - PADARIA AURORA - 12345678000199", MATRIZ)[0] == "501"
+    # Parte que só começa igual não vale ("TRANSF CC PARA CC PJ" não é "TRANSF ENTRE CONTAS")
+    m = _matriz([("Transf Entre Contas - BANCO ALFA", "1482")])
+    assert procurar_na_matriz("TRANSF CC PARA CC PJ - FULANO DE TAL", m)[0] is None
