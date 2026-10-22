@@ -150,6 +150,16 @@ def test_planilha_com_coluna_do_banco_separa_as_contas():
     assert leitura["Banco/Conta"].iat[0] == "pela coluna Banco"
 
 
+def test_planilha_do_cartao_nao_se_mistura_com_o_banco():
+    base, leitura, _ = importar([("financeiro.csv", RELATORIO_COM_BANCO),
+                                 ("cartao de credito.csv", RELATORIO_COM_BANCO)])
+    contas = set(base["Banco/Conta"])
+    assert {"BANCO DELTA", "Cartão BANCO DELTA", "Cartão BANCO GAMA - CONTA 1"} <= contas
+    assert set(base.loc[base["Arquivo"] == "cartao de credito.csv", "Banco/Conta"]) == {
+        "Cartão BANCO GAMA - CONTA 1", "Cartão BANCO DELTA", "cartao de credito (sem banco)"}
+    assert leitura["Banco/Conta"].iat[1] == "cartão, pela coluna Banco"
+
+
 def test_escolha_antiga_sem_banco_ainda_acha_a_coluna_do_banco():
     _, _, layouts = importar([("financeiro.csv", RELATORIO_COM_BANCO)])
     (cols, info), = layouts.items()

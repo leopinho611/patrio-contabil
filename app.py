@@ -21,7 +21,7 @@ for _modulo in ("financeiro", "leitores_pdf", "importacao", "classificacao"):   
 from classificacao import (TABELAS, classificar, codigos_na_matriz, linhas_novas_da_matriz,
                            matriz_da_tabela, matriz_mais, matriz_para_excel, parece_matriz,
                            parece_planilha_base, tabela_da_matriz, tabela_mais)
-from importacao import COLUNAS_BASE, importar, para_excel
+from importacao import COLUNAS_BASE, eh_cartao, importar, para_excel
 
 st.set_page_config(page_title="Patrio · Planilha base APP", layout="wide")
 # Cabeçalho no visual da Patrio (cores em .streamlit/config.toml). O topo da página fica
@@ -78,6 +78,8 @@ def banco_parecido(conta, bancos):
     nome igual, senão o nome mais longo contido nela (ex.: SICOOB em "... SICOOB CREDIMEP")."""
     chave = lambda t: " ".join(str(t).lower().split())
     nomes = [chave(b) for b in bancos]
+    if eh_cartao(conta):   # cartão: só uma linha que também seja do cartão
+        nomes = [b if eh_cartao(b) else "" for b in nomes]
     if chave(conta) in nomes:
         return nomes.index(chave(conta)) + 1
     contidos = [(len(b), i) for i, b in enumerate(nomes) if b and b in chave(conta)]
@@ -159,7 +161,9 @@ def nomes_curtos(nomes):
                 comum = n[:len(os.path.commonprefix([n, outro]))]
                 comum = comum[:comum.rfind(" - ") + 3] if " - " in comum else ""
                 prefixo = max(prefixo, comum, key=len)
-        curtos[n] = n[len(prefixo):] or n
+        curto = n[len(prefixo):] or n
+        # O cartão continua dizendo que é cartão, mesmo sem o começo do nome
+        curtos[n] = f"Cartão {curto}" if eh_cartao(prefixo) and not eh_cartao(curto) else curto
     return curtos
 
 
