@@ -219,3 +219,21 @@ def test_matriz_editada_no_app_vale_para_a_classificacao():
     assert bancos == {"BANCO ALFA": "940", "BANCO BETA": "846"}
     r = classificar(_base([(CC, "POSTO X - COMBUSTIVEL", -50.0)]), m, CODIGOS)
     assert r["Débito"].iat[0] == "329"
+
+
+def test_banco_como_fornecedor_nao_decide_a_conta():
+    m = _matriz([("BANCO GAMA S.A. - 12345678000199", "360"), ("PADARIA AURORA LTDA", "501")])
+    r = classificar(_base([(CC, "BANCO GAMA S.A. - 12345678000199 - ALIMENTACAO", -50.0),
+                           (CC, "BANCO GAMA S.A. - 12345678000199 - RENDIMENTOS", 8.0),
+                           (CC, "PADARIA AURORA LTDA - LANCHE", -20.0)]), m, CODIGOS)
+    assert list(r["Débito"]) == ["", "100", "501"] and list(r["Crédito"]) == ["100", "", "100"]
+    assert "despesa bancária, empréstimo ou consórcio" in r["Conferir"].iat[0]
+    assert "rendimento, resgate ou transferência" in r["Conferir"].iat[1]
+
+
+def test_linha_de_receita_nao_vale_para_saida():
+    m = matriz_da_tabela(pd.DataFrame({"Tabela": ["Receita"], "Descrição": ["CLIENTE ALFA"],
+                                       "Conta": ["557"]}))[0]
+    r = classificar(_base([(CC, "PIX ENVIADO CLIENTE ALFA", -10.0),
+                           (CC, "PIX RECEBIDO CLIENTE ALFA", 10.0)]), m, CODIGOS)
+    assert list(r["Débito"]) == ["", "100"] and list(r["Crédito"]) == ["100", "557"]

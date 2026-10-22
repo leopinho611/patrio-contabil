@@ -112,23 +112,8 @@ def _cabecalho_da_matriz(bruto):
 
 def ler_matriz(arquivo):
     """Planilha matriz -> DataFrame com Descrição, Conta, Nome (tokens do nome) e
-    Recebimento (True: linha de entrada; False: de saída; None: serve para os dois)."""
-    partes = []
-    for tipo, t in _tabelas_da_matriz(arquivo):
-        if tipo == "banco":
-            continue
-        t = t.copy()
-        t["Conta"] = t["Conta"].str.replace(r"\.0$", "", regex=True)
-        cabecalho = t["Conta"].str.lower().str.startswith("conta cont")
-        t = t[~cabecalho & (t["Descrição"] != "") & (t["Conta"] != "")]
-        if tipo is None:   # tabela única: o sentido vem do texto ("Depósito ...", "PIX RECEPÇÃO")
-            t["Recebimento"] = t["Descrição"].str.match(_RECEBIMENTO)
-        else:
-            t["Recebimento"] = {"receita": True, "despesa": False}.get(tipo)
-        partes.append(t)
-    m = pd.concat(partes, ignore_index=True)
-    m["Nome"] = m["Descrição"].map(_nome_na_matriz)
-    return m.reset_index(drop=True)
+    Recebimento (True: só entradas; False: só saídas; None: serve para as duas)."""
+    return matriz_da_tabela(tabela_da_matriz(arquivo))[0]
 
 
 def bancos_na_matriz(arquivo):
@@ -234,6 +219,21 @@ def _pontua(extrato, matriz):
     return max(iguais / len(curto), primeira)
 
 
+_FINANCEIRA = re.compile(
+    r"\b(banco|bancoob|sicoob|sicredi|unicred|cresol|cooperativ[ao] de credito|caixa economica|"
+    r"financeira|financiamento|consorcio|asaas|pagseguro|mercado pago|stone|cielo|getnet|nubank|"
+    r"itau|bradesco|santander|btg|safra|banrisul)\b")
+_EMPRESA = re.compile(r"\d{11,14}|\bs\s*[./]\s*a\b|\bltda\b")
+
+
+def eh_instituicao_financeira(nome):
+    """O nome (da matriz) é de um banco, cooperativa de crédito, financeira ou similar? Só
+    nomes de empresa (com CNPJ, S.A. ou LTDA): "TAXAS BANCÁRIAS" e "CARTÃO SICOOB" são
+    categorias, não instituições."""
+    n = _sem_acento(str(nome))
+    return bool(_FINANCEIRA.search(n) and _EMPRESA.search(n))
+
+
 def procurar_na_matriz(descricao, matriz, minimo=0.75, entrada=None):
     """(conta, descrição da matriz, aviso) para a descrição do extrato.
 
@@ -242,8 +242,13 @@ def procurar_na_matriz(descricao, matriz, minimo=0.75, entrada=None):
     nomes = _nomes_no_extrato(descricao)
     if not nomes:
         return None, "", "sem nome do fornecedor no extrato"
+    # Receita só vale para entradas e Despesa só para saídas; Participante, para as duas
+    if entrada is not None and "Recebimento" in matriz:
+        validas = [i for i, r in enumerate(matriz["Recebimento"]) if r is None or bool(r) == entrada]
+    else:
+        validas = range(len(matriz))
     for k, nome in enumerate(nomes):
-        notas = [(_pontua(nome, n), i) for i, n in enumerate(matriz["Nome"])]
+        notas = [(_pontua(nome, matriz.at[i, "Nome"]), i) for i in validas]
         maior = max((s for s, _ in notas), default=0)
         # As outras partes só valem se casarem por inteiro ("TRANSF CC PARA CC PJ" não é
         # "TRANSF ENTRE CONTAS")
@@ -255,9 +260,9 @@ def procurar_na_matriz(descricao, matriz, minimo=0.75, entrada=None):
     iguais = [i for i in melhores if matriz.at[i, "Nome"] == nome]
     melhores = iguais or melhores
     if entrada is not None and "Recebimento" in matriz:
-        mesmo_sentido = [i for i in melhores if matriz.at[i, "Recebimento"] is None
-                         or bool(matriz.at[i, "Recebimento"]) == entrada]
-        melhores = mesmo_sentido or melhores
+        # A linha do mesmo sentido ganha da que vale para os dois ("Depósito ... - QUANTA")
+        proprias = [i for i in melhores if matriz.at[i, "Recebimento"] is not None]
+        melhores = proprias or melhores
     contas = matriz.loc[melhores, "Conta"]
     votos = contas.value_counts()
     conta = votos.index[0]
@@ -345,6 +350,12 @@ def classificar(base, matriz, contas_bancos):
             outra, origem, aviso = procurar_na_matriz(descricao, matriz, entrada=valor > 0)
             if aviso:
                 avisos.append(aviso)
+            if outra and eh_instituicao_financeira(origem):
+                # Banco ou financeira como fornecedor/cliente: a conta depende do que é
+                avisos.append("instituição financeira: confira se é " + (
+                    "rendimento, resgate ou transferência" if valor > 0
+                    else "despesa bancária, empréstimo ou consórcio"))
+                outra, origem = None, f"(não usada) {origem}"
         if outra and str(outra).lower() == NAO_IMPORTAR:
             debitos.append(""), creditos.append(""), historicos.append("")
             origens.append(origem), conferir.append("matriz diz para não importar")
@@ -419,9 +430,9 @@ def tabela_da_matriz(arquivo):
         t["Conta"] = t["Conta"].str.replace(r"\.0$", "", regex=True)
         cabecalho = t["Conta"].str.lower().str.startswith("conta")
         t = t[~cabecalho & (t["Descrição"] != "") & (t["Conta"] != "")]
-        if tipo is None:   # tabela única: o sentido vem do texto
+        if tipo is None:   # tabela única: só "Depósito ...", "PIX RECEPÇÃO" etc. têm sentido
             t["Tabela"] = t["Descrição"].str.match(_RECEBIMENTO).map({True: "Receita",
-                                                                       False: "Despesa"})
+                                                                       False: "Participante"})
         else:
             t["Tabela"] = _NOME_TABELA[tipo]
         partes.append(t[["Tabela", "Descrição", "Conta"]])
