@@ -60,17 +60,16 @@ def matriz_lida(conteudo, versao):
     return tabela_da_matriz(io.BytesIO(conteudo)), codigos_na_matriz(io.BytesIO(conteudo))
 
 
-def aplicar_edicoes(tabela, estado):
-    """A tabela com as mudanças feitas no editor (guardadas pelo Streamlit como diferenças
-    em relação à tabela original): linhas alteradas, apagadas e incluídas."""
-    if not estado:
-        return tabela
-    t = tabela.copy().reset_index(drop=True)
+def aplicar_edicoes(tabela, vista, estado, nova_tabela="Participante"):
+    """A tabela inteira com as mudanças feitas no editor sobre a vista filtrada (o
+    Streamlit guarda as diferenças pela posição da linha na vista)."""
+    t = tabela.copy()
     for pos, mudancas in estado.get("edited_rows", {}).items():
         for coluna, valor in mudancas.items():
-            t.at[int(pos), coluna] = valor
-    t = t.drop(index=[i for i in estado.get("deleted_rows", []) if i in t.index])
+            t.at[vista.index[int(pos)], coluna] = valor
+    t = t.drop(index=[vista.index[i] for i in estado.get("deleted_rows", [])])
     incluidas = pd.DataFrame(estado.get("added_rows", []), columns=t.columns)
+    incluidas["Tabela"] = incluidas["Tabela"].fillna(nova_tabela)
     return pd.concat([t, incluidas], ignore_index=True)
 
 
@@ -189,9 +188,11 @@ with st.sidebar:
     matriz = matriz_enviada.getvalue() if matriz_enviada else (matrizes[0][1] if matrizes else None)
     # A matriz vale como foi editada na aba "Planilha matriz"
     tabela_original, codigos_matriz = matriz_lida(matriz, VERSAO) if matriz else (None, {})
-    chave_editor = f"editor matriz {hash(matriz)}"
-    tabela_matriz = aplicar_edicoes(tabela_original, st.session_state.get(chave_editor)) \
-        if matriz else None
+    # A tabela inteira, com as alterações feitas na aba "Planilha matriz"
+    chave_matriz = f"matriz {hash(matriz)}"
+    if matriz and chave_matriz not in st.session_state:
+        st.session_state[chave_matriz] = {"tabela": tabela_original.copy(), "versao": 0}
+    tabela_matriz = st.session_state[chave_matriz]["tabela"] if matriz else None
     matriz_df, bancos = matriz_da_tabela(tabela_matriz) if matriz else (None, {})
 
     curtos = nomes_curtos(list(contas) + list(bancos))
@@ -282,26 +283,58 @@ if matriz and any(codigos.values()):
 XLSX = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 aba_base, aba_matriz = st.tabs(["Planilha base", "Planilha matriz"])
 
+# Matriz sem tabela de bancos: entra cada conta dos extratos com o código escolhido
+if matriz:
+    faltam = [c for c in contas if codigos.get(c) and c not in bancos and "(sem banco)" not in c
+              and c not in set(tabela_matriz.loc[tabela_matriz["Tabela"] == "Banco", "Descrição"])]
+    if faltam:
+        tabela_matriz = pd.concat([tabela_matriz, pd.DataFrame(
+            {"Tabela": "Banco", "Descrição": faltam, "Conta": [codigos[c] for c in faltam]})],
+            ignore_index=True)
+        st.session_state[chave_matriz]["tabela"] = tabela_matriz
+
 with aba_matriz:
     if not matriz:
         st.info("Envie a planilha matriz junto com os arquivos ou na barra lateral.")
     else:
-        st.caption("Consulte e altere a matriz aqui: a planilha base é reclassificada na hora. "
-                   "Para incluir uma linha, use a última linha vazia da tabela; para procurar, "
-                   "a lupa no canto da tabela.")
+        estado_matriz = st.session_state[chave_matriz]
+        m_tabela, m_descricao, m_conta = st.columns([1.5, 3, 1.5])
+        filtro_tabela = m_tabela.selectbox("Tabela", ["Todas"] + TABELAS, key="filtro tabela")
+        filtro_descricao = m_descricao.text_input("Descrição", placeholder="contém...",
+                                                  key="filtro descricao")
+        filtro_conta = m_conta.text_input("Conta contábil", placeholder="contém...",
+                                          key="filtro conta")
+        vista_matriz = tabela_matriz
+        if filtro_tabela != "Todas":
+            vista_matriz = vista_matriz[vista_matriz["Tabela"] == filtro_tabela]
+        for coluna, filtro in (("Descrição", filtro_descricao), ("Conta", filtro_conta)):
+            if filtro.strip():
+                vista_matriz = vista_matriz[vista_matriz[coluna].astype(str).str.contains(
+                    filtro.strip(), case=False, regex=False)]
+        st.caption(f"{len(vista_matriz)} de {len(tabela_matriz)} linhas. Altere, inclua (última "
+                   "linha vazia) ou apague linhas: a planilha base é reclassificada na hora.")
+        chave_editor = (f"editor {chave_matriz} {estado_matriz['versao']} "
+                        f"{filtro_tabela} {filtro_descricao} {filtro_conta}")
         st.data_editor(
-            tabela_original, key=chave_editor, num_rows="dynamic", hide_index=True,
-            width="stretch", height=560,
+            vista_matriz, key=chave_editor, num_rows="dynamic", hide_index=True,
+            width="stretch", height=min(520, 35 * (len(vista_matriz) + 3)),
             column_config={
                 "Tabela": st.column_config.SelectboxColumn(
-                    options=TABELAS, required=True, width="small",
+                    options=TABELAS, width="small",
                     help="Receita só vale para entradas e Despesa só para saídas; Participante "
                          "vale para os dois. Banco é a conta contábil de cada banco."),
                 "Descrição": st.column_config.TextColumn(width="large"),
                 "Conta": st.column_config.TextColumn("Conta contábil", width="small")})
+        edicoes = st.session_state.get(chave_editor) or {}
+        if any(edicoes.get(k) for k in ("edited_rows", "added_rows", "deleted_rows")):
+            estado_matriz["tabela"] = aplicar_edicoes(
+                tabela_matriz, vista_matriz, edicoes,
+                filtro_tabela if filtro_tabela != "Todas" else "Participante")
+            estado_matriz["versao"] += 1
+            st.rerun()
         if novas is not None and len(novas):
             st.markdown(f"**Linhas novas, das correções na planilha base ({len(novas)})**")
-            st.dataframe(tabela_mais(tabela_original.iloc[:0], novas), hide_index=True,
+            st.dataframe(tabela_mais(tabela_matriz.iloc[:0], novas), hide_index=True,
                          width="stretch")
         nome_matriz = matriz_enviada.name if matriz_enviada else matrizes[0][0]
         st.download_button("Baixar planilha matriz (.xlsx)",
@@ -309,8 +342,8 @@ with aba_matriz:
                                              if novas is not None and len(novas) else tabela_matriz,
                                              matriz),
                            nome_matriz.rsplit(".", 1)[0] + ".xlsx", XLSX, type="primary",
-                           help="Com as alterações feitas aqui e as correções da planilha base. "
-                                "Substitua a matriz da empresa por esta.")
+                           help="Com as alterações feitas aqui, os bancos e as correções da "
+                                "planilha base. Substitua a matriz da empresa por esta.")
 
 with aba_base:
     # Filtros da tabela
