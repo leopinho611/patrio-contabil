@@ -10,6 +10,7 @@ dos bancos (Banco/Conta da planilha base -> código). O que não dá para decidi
 branco, com o motivo na coluna "Conferir".
 """
 
+import functools
 import io
 import re
 import unicodedata
@@ -201,6 +202,7 @@ def _casa(a, b, cortado):
     return cortado and min(len(a), len(b)) >= 3 and (a.startswith(b) or b.startswith(a))
 
 
+@functools.lru_cache(maxsize=500_000)
 def _pontua(extrato, matriz):
     if not extrato or not matriz:
         return 0.0
@@ -243,12 +245,13 @@ def procurar_na_matriz(descricao, matriz, minimo=0.75, entrada=None):
     if not nomes:
         return None, "", "sem nome do fornecedor no extrato"
     # Receita só vale para entradas e Despesa só para saídas; Participante, para as duas
+    nomes_m = matriz["Nome"].tolist()
     if entrada is not None and "Recebimento" in matriz:
         validas = [i for i, r in enumerate(matriz["Recebimento"]) if r is None or bool(r) == entrada]
     else:
         validas = range(len(matriz))
     for k, nome in enumerate(nomes):
-        notas = [(_pontua(nome, matriz.at[i, "Nome"]), i) for i in validas]
+        notas = [(_pontua(nome, nomes_m[i]), i) for i in validas]
         maior = max((s for s, _ in notas), default=0)
         # As outras partes só valem se casarem por inteiro ("TRANSF CC PARA CC PJ" não é
         # "TRANSF ENTRE CONTAS")
@@ -257,7 +260,7 @@ def procurar_na_matriz(descricao, matriz, minimo=0.75, entrada=None):
     else:
         return None, "", "não achei na matriz"
     melhores = [i for s, i in notas if s == maior]   # só os que casaram melhor votam
-    iguais = [i for i in melhores if matriz.at[i, "Nome"] == nome]
+    iguais = [i for i in melhores if nomes_m[i] == nome]
     melhores = iguais or melhores
     if entrada is not None and "Recebimento" in matriz:
         # A linha do mesmo sentido ganha da que vale para os dois ("Depósito ... - QUANTA")
@@ -326,6 +329,7 @@ def classificar(base, matriz, contas_bancos):
     """
     b = base.copy()
     debitos, creditos, historicos, origens, conferir = [], [], [], [], []
+    procurados = {}
     for conta_banco, descricao, valor in zip(b["Banco/Conta"], b["Descrição"], b["Valor"]):
         banco = _codigo_do_banco(conta_banco, contas_bancos)
         avisos = []
@@ -347,7 +351,10 @@ def classificar(base, matriz, contas_bancos):
             if not outra:
                 avisos.append("falta o código da aplicação deste banco")
         if not outra and not (origem and avisos):
-            outra, origem, aviso = procurar_na_matriz(descricao, matriz, entrada=valor > 0)
+            chave = (descricao, valor > 0)   # históricos repetidos: procura uma vez só
+            if chave not in procurados:
+                procurados[chave] = procurar_na_matriz(descricao, matriz, entrada=valor > 0)
+            outra, origem, aviso = procurados[chave]
             if aviso:
                 avisos.append(aviso)
             if outra and eh_instituicao_financeira(origem):

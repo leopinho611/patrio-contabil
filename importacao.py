@@ -127,6 +127,18 @@ def conta_do_arquivo(nome, conteudo, conta):
     return conta
 
 
+_CARTAO = re.compile(r"cart[aã]o|cartao|fatura|credit ?card", re.IGNORECASE)
+
+
+def eh_cartao(nome):
+    """O nome do arquivo diz que é cartão de crédito (ex.: "Cartão de crédito.xlsx")."""
+    return bool(_CARTAO.search(nome.rsplit(" › ", 1)[-1]))
+
+
+def _conta_do_cartao(conta):
+    return conta if re.search(r"cart[aã]o", conta, re.IGNORECASE) else f"Cartão {conta}"
+
+
 _HISTORICO_ALTERNATIVO = ("descri", "histor", "memo", "titulo", "observ", "fornec",
                           "favorec", "cliente")
 # Coluna que diz se é entrada ou saída (o valor vem sempre positivo)
@@ -303,6 +315,8 @@ def importar(arquivos, colunas_por_layout=None):
                        # fora as linhas de total (sem data), que trazem valores na coluna
                        if converter_datas(p[colunas["data"]]).notna().any()]
                       if banco in bruto and colunas.get("data") else [(conta, bruto)])
+            if eh_cartao(nome):   # cartão não se mistura com a conta corrente do mesmo banco
+                partes = [(_conta_do_cartao(b), p) for b, p in partes]
             try:
                 t = pd.concat([montar_transacoes(p, colunas, b) for b, p in partes],
                               ignore_index=True)
@@ -313,7 +327,8 @@ def importar(arquivos, colunas_por_layout=None):
             t["Arquivo"] = nome
             tabelas.append(t)
             leitura.append({"Arquivo": nome,
-                            "Banco/Conta": f"pela coluna {banco}" if banco in bruto else conta,
+                            "Banco/Conta": ("cartão, " if eh_cartao(nome) else "")
+                                           + (f"pela coluna {banco}" if banco in bruto else conta),
                             "Situação": f"{len(t)} lançamentos"
                                         + (f" (entrada/saída pela coluna {sentido})"
                                            if sentido else "")})
