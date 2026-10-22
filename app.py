@@ -18,7 +18,7 @@ for _modulo in ("financeiro", "leitores_pdf", "importacao", "classificacao"):   
     if _modulo in sys.modules:
         importlib.reload(sys.modules[_modulo])
 
-from classificacao import (TABELAS, classificar, codigos_na_matriz, linhas_novas_da_matriz,
+from classificacao import (TABELAS, a_classificar, classificar, codigos_na_matriz, linhas_novas_da_matriz,
                            matriz_da_tabela, matriz_mais, matriz_para_excel, parece_matriz,
                            parece_planilha_base, tabela_da_matriz, tabela_mais)
 from importacao import COLUNAS_BASE, eh_cartao, importar, para_excel
@@ -285,7 +285,12 @@ if matriz and any(codigos.values()):
                 "O motivo dos outros está na coluna Conferir.")
 
 XLSX = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-aba_base, aba_matriz = st.tabs(["Planilha base", "Planilha matriz"])
+# Lançamentos ainda sem a conta do fornecedor/cliente, juntados pelo nome
+do_cliente = [n for info in layouts.values() for n in info["arquivos"]]
+pendentes = a_classificar(base, do_cliente) if matriz else None
+# Com key, a aba aberta continua a mesma depois de classificar (o app roda de novo)
+aba_base, aba_matriz, aba_classificar = st.tabs(
+    ["Planilha base", "Planilha matriz", "A classificar"], key="aba", on_change="rerun")
 
 # Matriz sem tabela de bancos: entra cada conta dos extratos com o código escolhido
 if matriz:
@@ -296,6 +301,19 @@ if matriz:
             {"Tabela": "Banco", "Descrição": faltam, "Conta": [codigos[c] for c in faltam]})],
             ignore_index=True)
         st.session_state[chave_matriz]["tabela"] = tabela_matriz
+
+
+def baixar_matriz(onde):
+    nome_matriz = matriz_enviada.name if matriz_enviada else matrizes[0][0]
+    st.download_button("Baixar planilha matriz (.xlsx)",
+                       matriz_para_excel(tabela_mais(tabela_matriz, novas)
+                                         if novas is not None and len(novas) else tabela_matriz,
+                                         matriz),
+                       nome_matriz.rsplit(".", 1)[0] + ".xlsx", XLSX, type="primary",
+                       key=f"baixar matriz {onde}",
+                       help="Com o que já tinha, o que foi classificado aqui, os bancos e as "
+                            "correções da planilha base. Substitua a matriz da empresa por esta.")
+
 
 with aba_matriz:
     if not matriz:
@@ -340,14 +358,58 @@ with aba_matriz:
             st.markdown(f"**Linhas novas, das correções na planilha base ({len(novas)})**")
             st.dataframe(tabela_mais(tabela_matriz.iloc[:0], novas), hide_index=True,
                          width="stretch")
-        nome_matriz = matriz_enviada.name if matriz_enviada else matrizes[0][0]
-        st.download_button("Baixar planilha matriz (.xlsx)",
-                           matriz_para_excel(tabela_mais(tabela_matriz, novas)
-                                             if novas is not None and len(novas) else tabela_matriz,
-                                             matriz),
-                           nome_matriz.rsplit(".", 1)[0] + ".xlsx", XLSX, type="primary",
-                           help="Com as alterações feitas aqui, os bancos e as correções da "
-                                "planilha base. Substitua a matriz da empresa por esta.")
+        baixar_matriz("aqui")
+
+
+with aba_classificar:
+    if not matriz:
+        st.info("Envie a planilha matriz para ver o que falta classificar.")
+    elif pendentes.empty:
+        st.success("Todos os lançamentos têm a conta do fornecedor ou cliente.")
+        baixar_matriz("classificar")
+    else:
+        estado_matriz = st.session_state[chave_matriz]
+        c_sentido, c_busca = st.columns([1, 3])
+        p_sentido = c_sentido.selectbox("Entrada/Saída", ["Todas", "Entrada", "Saída"],
+                                        key="pendentes sentido")
+        p_busca = c_busca.text_input("Buscar", placeholder="nome, histórico...",
+                                     key="pendentes busca")
+        vista_p = pendentes
+        if p_sentido != "Todas":
+            vista_p = vista_p[vista_p["Entrada/Saída"] == p_sentido]
+        if p_busca.strip():
+            texto_p = (vista_p["Descrição"] + " " + vista_p["Exemplo"]).str.lower()
+            vista_p = vista_p[texto_p.str.contains(p_busca.strip().lower(), regex=False)]
+        st.caption(f"{len(vista_p)} nomes, {int(vista_p['Lançamentos'].sum())} lançamentos sem a "
+                   "conta do fornecedor ou cliente. Digite a conta contábil: a linha entra na "
+                   "planilha matriz e os lançamentos já são classificados. Ajuste a descrição "
+                   "se quiser gravar outro nome.")
+        editada_p = st.data_editor(
+            vista_p, key=f"pendentes {chave_matriz} {estado_matriz['versao']} {p_sentido} {p_busca}",
+            hide_index=True, width="stretch", height=min(520, 35 * (len(vista_p) + 2)),
+            column_order=["Descrição", "Conta", "Tabela", "Entrada/Saída", "Lançamentos", "Valor",
+                          "Exemplo"],
+            disabled=["Entrada/Saída", "Lançamentos", "Valor", "Exemplo"],
+            column_config={
+                "Descrição": st.column_config.TextColumn("Descrição na matriz", width="medium",
+                                                         help="O nome que vai para a matriz."),
+                "Valor": st.column_config.NumberColumn("Total", format="%.2f"),
+                "Exemplo": st.column_config.TextColumn("Exemplo de histórico", width="medium"),
+                "Tabela": st.column_config.SelectboxColumn(
+                    options=TABELAS[:3], width="small",
+                    help="Receita só vale para entradas e Despesa só para saídas; "
+                         "Participante vale para os dois."),
+                "Conta": st.column_config.TextColumn("Conta contábil", width="small")})
+        prontas_p = editada_p[editada_p["Conta"].fillna("").astype(str).str.strip() != ""]
+        prontas_p = prontas_p[prontas_p["Descrição"].fillna("").astype(str).str.strip() != ""]
+        if len(prontas_p):
+            estado_matriz["tabela"] = pd.concat([tabela_matriz, pd.DataFrame({
+                "Tabela": prontas_p["Tabela"].fillna("Participante"),
+                "Descrição": prontas_p["Descrição"].astype(str).str.strip(),
+                "Conta": prontas_p["Conta"].astype(str).str.strip()})], ignore_index=True)
+            estado_matriz["versao"] += 1
+            st.rerun()
+        baixar_matriz("classificar")
 
 with aba_base:
     # Filtros da tabela
