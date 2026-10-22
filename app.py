@@ -457,9 +457,17 @@ with aba_base:
     periodo = f_periodo.date_input("Período", (datas.min().date(), datas.max().date()),
                                    format="DD/MM/YYYY")
     tipo = f_tipo.selectbox("Entrada/Saída", ["Todas", "Entrada", "Saída"])
-    situacao = f_situacao.selectbox("Classificação", ["Todos", "Com débito e crédito", "A conferir"])
+    situacao = f_situacao.selectbox("Classificação", ["Todos", "Com débito e crédito", "A conferir"]
+                                    + (["Diferente do razão"] if razao is not None else []))
     busca = f_busca.text_input("Buscar", placeholder="fornecedor, histórico, conta, valor...")
     vista = base
+    if razao is not None:
+        # Conta que o razão sugere para o lado do fornecedor/cliente de cada lançamento
+        sugerida = [razao.sugerir(d, v > 0)[0] or "" for d, v in zip(base["Descrição"], base["Valor"])]
+        lado = base["Crédito"].where(base["Valor"] > 0, base["Débito"]).fillna("").astype(str)
+        vista = base.assign(_sugerida=sugerida, _lado=lado.str.strip(),
+                            **{"Sugestão do razão": [f"{c} · {razao.nome(c)}" if c else ""
+                                                     for c in sugerida]})
     if banco_visto != "Todos":
         vista = vista[vista["Banco/Conta"] == nomes_contas[banco_visto]]
     if len(periodo) == 2:
@@ -472,12 +480,17 @@ with aba_base:
         vista = vista[completo]
     elif situacao == "A conferir":
         vista = vista[~completo]
+    elif situacao == "Diferente do razão":
+        vista = vista[(vista["_sugerida"] != "") & (vista["_sugerida"] != vista["_lado"])]
     if busca.strip():
         texto_linha = vista.astype(str).apply(" ".join, axis=1).str.lower()
         vista = vista[texto_linha.str.contains(busca.strip().lower(), regex=False)]
     st.caption(f"{len(vista)} de {len(base)} lançamentos na tabela.")
-    extras = [c for c in ("Conta na matriz", "Conferir") if c in base]
+    extras = [c for c in ("Conta na matriz", "Sugestão do razão", "Conferir") if c in vista]
     colunas_vista = COLUNAS_BASE[:1] + ["Entrada/Saída"] + COLUNAS_BASE[1:] + extras
+    if "Sugestão do razão" in extras:   # logo depois do Crédito, à vista
+        colunas_vista.remove("Sugestão do razão")
+        colunas_vista.insert(colunas_vista.index("Crédito") + 1, "Sugestão do razão")
     # Linhas sem débito ou crédito em amarelo-claro, para achar o que falta conferir
     amarelo = lambda linha: ["background-color:#FFF6C7" if not (linha["Débito"] and linha["Crédito"])
                              else ""] * len(linha)
@@ -488,7 +501,13 @@ with aba_base:
                        "Valor": st.column_config.NumberColumn(format="%.2f"),
                        "Conta na matriz": st.column_config.TextColumn(
                            help="Linha da matriz usada para a conta do fornecedor ou cliente. "
-                                "Se estiver errada, corrija na aba Planilha matriz.")})
+                                "Se estiver errada, corrija na aba Planilha matriz."),
+                       # Com o razão, a descrição estreita para a sugestão caber na tela
+                       **({"Descrição": st.column_config.TextColumn(width="medium")}
+                          if "Sugestão do razão" in extras else {}),
+                       "Sugestão do razão": st.column_config.TextColumn(
+                           help="Conta do fornecedor ou cliente que o razão sugere. Para usar, "
+                                "digite o código no Débito (saída) ou no Crédito (entrada).")})
     editada.index = vista.index
     texto = lambda df: df[EDITAVEIS].fillna("").astype(str).apply(lambda c: c.str.strip())
     mudou = (texto(editada) != texto(base.loc[vista.index])).any(axis=1)

@@ -91,6 +91,7 @@ class Razao:
                                     "Recebimento": None})
         self.contas["Nome"] = self.contas["Descrição"].map(_nome_na_matriz)
         self._categorias = {}
+        self._sugeridas = {}
 
     def _pelo_nome(self, nome):
         conta, achado, _ = procurar_na_matriz(nome, self.contas, minimo=0.9)
@@ -118,6 +119,12 @@ class Razao:
 
     def sugerir(self, descricao, entrada):
         """(código, de onde veio) para um lançamento do extrato/planilha, ou (None, "")."""
+        chave = (descricao, entrada)
+        if chave not in self._sugeridas:
+            self._sugeridas[chave] = self._sugerir(descricao, entrada)
+        return self._sugeridas[chave]
+
+    def _sugerir(self, descricao, entrada):
         partes = [p.strip() for p in str(descricao).split(" - ") if p.strip()]
         if not partes:
             return None, ""
