@@ -387,6 +387,8 @@ with aba_classificar:
         editada_p = st.data_editor(
             vista_p, key=f"pendentes {chave_matriz} {estado_matriz['versao']} {p_sentido} {p_busca}",
             hide_index=True, width="stretch", height=min(520, 35 * (len(vista_p) + 2)),
+            column_order=["Descrição", "Conta", "Tabela", "Entrada/Saída", "Lançamentos", "Valor",
+                          "Exemplo"],
             disabled=["Entrada/Saída", "Lançamentos", "Valor", "Exemplo"],
             column_config={
                 "Descrição": st.column_config.TextColumn("Descrição na matriz", width="medium",
