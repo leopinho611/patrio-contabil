@@ -263,3 +263,16 @@ def test_a_classificar_junta_pelo_fornecedor_e_some_ao_entrar_na_matriz():
     feita = classificar(base, matriz_da_tabela(tabela.reset_index(drop=True))[0], {"BANCO GAMA": "10"})
     assert list(feita["Débito"][:2]) == ["700", "700"]
     assert "PADARIA AURORA" not in set(a_classificar(feita, ["financeiro.csv"])["Descrição"])
+
+
+def test_fornecedor_vale_antes_da_categoria():
+    from classificacao import matriz_da_tabela
+    tabela = pd.DataFrame({"Tabela": ["Despesa", "Participante", "Despesa"],
+                           "Descrição": ["ASSISTENCIA 24H", "OFICINA ZETA", "IOF"],
+                           "Conta": ["226", "1065", "330"]})
+    base = pd.DataFrame({"Banco/Conta": "BANCO GAMA", "Data": "2026-04-06",
+                         "Descrição": ["OFICINA ZETA - 12345678000199 - ASSISTENCIA 24H",
+                                       "FINANCEIRA DELTA S.A. - 98765432000155 - IOF"],
+                         "Valor": [-50.0, -1.0], "Débito": "", "Crédito": "", "Histórico": ""})
+    feita = classificar(base, matriz_da_tabela(tabela)[0], {"BANCO GAMA": "10"})
+    assert list(feita["Débito"]) == ["1065", "330"]   # financeira continua pela categoria

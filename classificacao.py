@@ -183,7 +183,16 @@ def _nomes_no_extrato(descricao):
         if m:
             return [tuple(_tokens(m.expand(apelido)))]
     partes = d.split(" - ")
-    nomes = [tuple(_tokens(_PREFIXOS_EXTRATO.sub("", p))) for p in reversed(partes)]
+    ordem = list(reversed(partes))
+    # "FORNECEDOR - CNPJ - CATEGORIA" (planilha do cliente): vale primeiro o fornecedor,
+    # salvo banco ou financeira, que vai pela categoria
+    for i, p in enumerate(partes[1:], 1):
+        if re.fullmatch(r"[\d./-]{11,18}", p.strip()) and \
+                not eh_instituicao_financeira(f"{partes[i - 1]} {p}"):   # com o CNPJ
+            ordem.remove(partes[i - 1])
+            ordem.insert(0, partes[i - 1])
+            break
+    nomes = [tuple(_tokens(_PREFIXOS_EXTRATO.sub("", p))) for p in ordem]
     if len(partes) > 1:
         nomes.append(tuple(_tokens(d)))
     return [n for n in dict.fromkeys(nomes) if n]
@@ -401,9 +410,10 @@ def _nome_sugerido(descricao, pelo_fornecedor):
     pela descrição do que foi (tarifa, IOF...). Extrato: o nome no fim do histórico."""
     if pelo_fornecedor:
         partes = [p.strip() for p in str(descricao).split(" - ")]
-        partes = [p for p in partes if p and not re.fullmatch(r"[\d./-]+", p)]
+        cnpj = " ".join(p for p in partes if re.fullmatch(r"[\d./-]{11,18}", p))
         for parte in partes:
-            if not eh_instituicao_financeira(parte):
+            if parte and not re.fullmatch(r"[\d./-]+", parte) and \
+                    not eh_instituicao_financeira(f"{parte} {cnpj}"):
                 return parte
     return nome_para_matriz(descricao)
 
