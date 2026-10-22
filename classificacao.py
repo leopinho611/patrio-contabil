@@ -398,33 +398,82 @@ def linhas_novas_da_matriz(classificada, corrigida, matriz):
     return novas.reset_index(drop=True)
 
 
-def matriz_com_linhas_novas(conteudo, novas):
-    """A planilha matriz (.xlsx) com as linhas novas no fim da tabela certa: entradas na de
-    receita, saídas na de despesa (sem essas, na de participantes ou na tabela única)."""
-    import openpyxl
-    livro = openpyxl.load_workbook(io.BytesIO(conteudo))
-    aba = livro.worksheets[0]
-    bruto = pd.read_excel(io.BytesIO(conteudo), header=None, dtype=str).fillna("")
-    linha, pares = _cabecalho_da_matriz(bruto)
-    colunas = {tipo: j for tipo, j in reversed(pares)}   # a primeira de cada tipo
-    for _, n in novas.iterrows():
-        outras = [j for tipo, j in pares if tipo != "banco"]
-        j = colunas.get("receita" if n["Entrada"] else "despesa",
-                        colunas.get("", outras[0] if outras else 1))
-        col_desc, col_conta = j, j + 1                     # openpyxl conta a partir de 1
-        ultima = max((c.row for c in aba[openpyxl.utils.get_column_letter(col_desc)]
-                      if c.value not in (None, "")), default=0)
-        conta = int(n["Conta"]) if str(n["Conta"]).isdigit() else n["Conta"]
-        aba.cell(ultima + 1, col_desc, n["Descrição"])
-        aba.cell(ultima + 1, col_conta, conta)
-    saida = io.BytesIO()
-    livro.save(saida)
-    return saida.getvalue()
-
-
 def matriz_mais(matriz, novas):
     """A matriz lida mais as linhas novas (ainda não gravadas no arquivo)."""
     extra = pd.DataFrame({"Descrição": novas["Descrição"], "Conta": novas["Conta"].astype(str),
                           "Recebimento": novas["Entrada"].astype(object)})
     extra["Nome"] = extra["Descrição"].map(_nome_na_matriz)
     return pd.concat([matriz, extra], ignore_index=True)
+
+
+# Matriz como uma tabela só, para consultar e editar no app
+TABELAS = ["Participante", "Receita", "Despesa", "Banco"]
+_NOME_TABELA = {"": "Participante", "receita": "Receita", "despesa": "Despesa", "banco": "Banco"}
+
+
+def tabela_da_matriz(arquivo):
+    """Todas as linhas da matriz: DataFrame com Tabela, Descrição e Conta."""
+    partes = []
+    for tipo, t in _tabelas_da_matriz(arquivo):
+        t = t.copy()
+        t["Conta"] = t["Conta"].str.replace(r"\.0$", "", regex=True)
+        cabecalho = t["Conta"].str.lower().str.startswith("conta")
+        t = t[~cabecalho & (t["Descrição"] != "") & (t["Conta"] != "")]
+        if tipo is None:   # tabela única: o sentido vem do texto
+            t["Tabela"] = t["Descrição"].str.match(_RECEBIMENTO).map({True: "Receita",
+                                                                       False: "Despesa"})
+        else:
+            t["Tabela"] = _NOME_TABELA[tipo]
+        partes.append(t[["Tabela", "Descrição", "Conta"]])
+    return pd.concat(partes, ignore_index=True)
+
+
+def matriz_da_tabela(tabela):
+    """(matriz para classificar, {banco: conta}) a partir da tabela editada no app."""
+    t = tabela.fillna("").astype(str).apply(lambda c: c.str.strip())
+    t = t[(t["Descrição"] != "") & (t["Conta"] != "")]
+    bancos = t[t["Tabela"] == "Banco"]
+    m = t[t["Tabela"] != "Banco"].copy()
+    m["Recebimento"] = m["Tabela"].map({"Receita": True, "Despesa": False}).astype(object)
+    m["Recebimento"] = m["Recebimento"].where(m["Tabela"].isin(["Receita", "Despesa"]), None)
+    m["Nome"] = m["Descrição"].map(_nome_na_matriz)
+    return (m[["Descrição", "Conta", "Recebimento", "Nome"]].reset_index(drop=True),
+            dict(zip(bancos["Descrição"], bancos["Conta"])))
+
+
+def tabela_mais(tabela, novas):
+    """A tabela da matriz mais as linhas novas que vieram das correções."""
+    extra = pd.DataFrame({"Tabela": novas["Entrada"].map({True: "Receita", False: "Despesa"}),
+                          "Descrição": novas["Descrição"], "Conta": novas["Conta"].astype(str)})
+    return pd.concat([tabela, extra], ignore_index=True)
+
+
+def matriz_para_excel(tabela, original=None):
+    """A matriz em .xlsx, com as tabelas lado a lado (PARTICIPANTE | CONTA, BANCO | CONTA,
+    DESCRIÇÃO DA RECEITA | CONTA, DESCRIÇÃO DA DESPESA | CONTA) na primeira aba. As outras
+    abas do arquivo original (ex.: códigos dos bancos) continuam como estavam."""
+    import openpyxl
+    from openpyxl.styles import Font
+    eh_xlsx = original is not None and original[:4] == b"PK\x03\x04"
+    livro = openpyxl.load_workbook(io.BytesIO(original)) if eh_xlsx else openpyxl.Workbook()
+    antiga = livro.worksheets[0]
+    aba = livro.create_sheet(antiga.title or "Matriz", 0)
+    livro.remove(antiga)
+    t = tabela.fillna("").astype(str)
+    t = t[(t["Descrição"].str.strip() != "") & (t["Conta"].str.strip() != "")]
+    cabecalhos = {"Participante": "DESCRIÇÃO/PARTICIPANTE", "Banco": "BANCO",
+                  "Receita": "DESCRIÇÃO DA RECEITA", "Despesa": "DESCRIÇÃO DA DESPESA"}
+    for n, (nome, cabecalho) in enumerate(cabecalhos.items()):
+        col = 1 + 3 * n
+        aba.cell(1, col, cabecalho).font = Font(bold=True)
+        aba.cell(1, col + 1, "CONTA CONTÁBIL").font = Font(bold=True)
+        aba.column_dimensions[openpyxl.utils.get_column_letter(col)].width = 45
+        aba.column_dimensions[openpyxl.utils.get_column_letter(col + 1)].width = 16
+        for linha, (_, r) in enumerate(t[t["Tabela"] == nome].iterrows(), start=2):
+            conta = r["Conta"].strip()
+            aba.cell(linha, col, r["Descrição"].strip())
+            aba.cell(linha, col + 1, int(conta) if conta.isdigit() else conta)
+    aba.freeze_panes = "A2"
+    saida = io.BytesIO()
+    livro.save(saida)
+    return saida.getvalue()

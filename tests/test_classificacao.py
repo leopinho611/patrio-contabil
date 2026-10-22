@@ -3,7 +3,8 @@ import io
 import pandas as pd
 
 from classificacao import (HIST_ENTRADA, HIST_SAIDA, bancos_na_matriz, classificar, codigos_na_matriz, ler_contas_bancos, ler_matriz,
-                           linhas_novas_da_matriz, matriz_com_linhas_novas, matriz_mais, nome_para_matriz, parece_matriz, parece_planilha_base, procurar_na_matriz)
+                           linhas_novas_da_matriz, matriz_da_tabela, matriz_mais, matriz_para_excel, nome_para_matriz, tabela_da_matriz,
+                           tabela_mais, parece_matriz, parece_planilha_base, procurar_na_matriz)
 
 CC = "Itaú Ag 1234 Cc 55555-1"
 APLIC = "Itaú Aplic Aut Mais Ag 1234 Cc 55555-1"
@@ -194,12 +195,13 @@ def test_correcoes_da_tabela_viram_linhas_novas_da_matriz():
         {"Descrição": "TARIFA PIX", "Conta": "360", "Entrada": False},
         {"Descrição": "MENSALIDADE", "Conta": "557", "Entrada": True}]
 
-    nova = ler_matriz(io.BytesIO(matriz_com_linhas_novas(conteudo, novas)))
+    gravada = matriz_para_excel(tabela_mais(tabela_da_matriz(io.BytesIO(conteudo)), novas), conteudo)
+    nova = ler_matriz(io.BytesIO(gravada))
     assert dict(zip(nova["Descrição"], zip(nova["Conta"], nova["Recebimento"]))) == {
         "PADARIA AURORA": ("501", None), "TAXA DE ADESAO": ("557", True),
         "MENSALIDADE": ("557", True), "COMBUSTIVEL": ("328", False),
         "ALUGUEL": ("330", False), "TARIFA PIX": ("360", False)}
-    assert bancos_na_matriz(io.BytesIO(matriz_com_linhas_novas(conteudo, novas))) == {
+    assert bancos_na_matriz(io.BytesIO(gravada)) == {
         "BANCO ALFA": "940", "BANCO BETA": "846"}
     # Já na matriz: não repete
     assert linhas_novas_da_matriz(classificada, corrigida, nova).empty
@@ -207,3 +209,13 @@ def test_correcoes_da_tabela_viram_linhas_novas_da_matriz():
     # E já vale para os outros lançamentos iguais, antes de gravar a matriz
     outra = classificar(_base([(CC, "BANCO DELTA - TARIFA PIX", -2.0)]), matriz_mais(m, novas), CODIGOS)
     assert outra["Débito"].iat[0] == "360"
+
+
+def test_matriz_editada_no_app_vale_para_a_classificacao():
+    tabela = tabela_da_matriz(io.BytesIO(_matriz_varias_tabelas()))
+    assert list(tabela["Tabela"]) == ["Participante", "Banco", "Banco", "Receita", "Despesa", "Despesa"]
+    tabela.loc[tabela["Descrição"] == "COMBUSTIVEL", "Conta"] = "329"
+    m, bancos = matriz_da_tabela(tabela)
+    assert bancos == {"BANCO ALFA": "940", "BANCO BETA": "846"}
+    r = classificar(_base([(CC, "POSTO X - COMBUSTIVEL", -50.0)]), m, CODIGOS)
+    assert r["Débito"].iat[0] == "329"
