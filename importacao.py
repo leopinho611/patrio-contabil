@@ -345,13 +345,17 @@ def para_excel(base):
     with pd.ExcelWriter(saida, engine="openpyxl") as w:
         base.to_excel(w, index=False, sheet_name="Base")
         aba = w.sheets["Base"]
-        larguras = {"A": 28, "B": 12, "C": 60, "D": 14, "E": 12, "F": 12, "G": 60, "H": 40, "I": 45, "J": 45}
-        for col, largura in larguras.items():
-            aba.column_dimensions[col].width = largura
-        for (celula,) in aba.iter_rows(min_row=2, min_col=2, max_col=2):
-            celula.number_format = "DD/MM/YYYY"
-        for (celula,) in aba.iter_rows(min_row=2, min_col=4, max_col=4):
-            celula.number_format = "#,##0.00;-#,##0.00"
+        # Largura e formato pelo nome da coluna (a ordem muda com as colunas extras)
+        larguras = {"Banco/Conta": 28, "Entrada/Saída": 12, "Data": 12, "Descrição": 60,
+                    "Valor": 14, "Débito": 12, "Crédito": 12, "Histórico": 60, "Arquivo": 30,
+                    "Conta na matriz": 45, "Conferir": 45}
+        formatos = {"Data": "DD/MM/YYYY", "Valor": "#,##0.00;-#,##0.00"}
+        for n, coluna in enumerate(base.columns, start=1):
+            letra = aba.cell(1, n).column_letter
+            aba.column_dimensions[letra].width = larguras.get(coluna, 16)
+            if coluna in formatos:
+                for (celula,) in aba.iter_rows(min_row=2, min_col=n, max_col=n):
+                    celula.number_format = formatos[coluna]
         aba.freeze_panes = "A2"
         aba.auto_filter.ref = aba.dimensions
     return saida.getvalue()

@@ -18,7 +18,9 @@ for _modulo in ("financeiro", "leitores_pdf", "importacao", "classificacao"):   
     if _modulo in sys.modules:
         importlib.reload(sys.modules[_modulo])
 
-from classificacao import bancos_na_matriz, classificar, codigos_na_matriz, ler_matriz, parece_matriz, parece_planilha_base
+from classificacao import (TABELAS, classificar, codigos_na_matriz, linhas_novas_da_matriz,
+                           matriz_da_tabela, matriz_mais, matriz_para_excel, parece_matriz,
+                           parece_planilha_base, tabela_da_matriz, tabela_mais)
 from importacao import COLUNAS_BASE, importar, para_excel
 
 st.set_page_config(page_title="Patrio · Planilha base APP", layout="wide")
@@ -55,8 +57,21 @@ def ler(arquivos, ajustes, versao):
 
 @st.cache_data(max_entries=3)
 def matriz_lida(conteudo, versao):
-    return (ler_matriz(io.BytesIO(conteudo)), codigos_na_matriz(io.BytesIO(conteudo)),
-            bancos_na_matriz(io.BytesIO(conteudo)))
+    return tabela_da_matriz(io.BytesIO(conteudo)), codigos_na_matriz(io.BytesIO(conteudo))
+
+
+def aplicar_edicoes(tabela, estado):
+    """A tabela com as mudanças feitas no editor (guardadas pelo Streamlit como diferenças
+    em relação à tabela original): linhas alteradas, apagadas e incluídas."""
+    if not estado:
+        return tabela
+    t = tabela.copy().reset_index(drop=True)
+    for pos, mudancas in estado.get("edited_rows", {}).items():
+        for coluna, valor in mudancas.items():
+            t.at[int(pos), coluna] = valor
+    t = t.drop(index=[i for i in estado.get("deleted_rows", []) if i in t.index])
+    incluidas = pd.DataFrame(estado.get("added_rows", []), columns=t.columns)
+    return pd.concat([t, incluidas], ignore_index=True)
 
 
 def banco_parecido(conta, bancos):
@@ -172,7 +187,12 @@ with st.sidebar:
 
     matriz_enviada = st.session_state.get("matriz")
     matriz = matriz_enviada.getvalue() if matriz_enviada else (matrizes[0][1] if matrizes else None)
-    matriz_df, codigos_matriz, bancos = matriz_lida(matriz, VERSAO) if matriz else (None, {}, {})
+    # A matriz vale como foi editada na aba "Planilha matriz"
+    tabela_original, codigos_matriz = matriz_lida(matriz, VERSAO) if matriz else (None, {})
+    chave_editor = f"editor matriz {hash(matriz)}"
+    tabela_matriz = aplicar_edicoes(tabela_original, st.session_state.get(chave_editor)) \
+        if matriz else None
+    matriz_df, bancos = matriz_da_tabela(tabela_matriz) if matriz else (None, {})
 
     curtos = nomes_curtos(list(contas) + list(bancos))
     opcoes_banco = {"—": ""} | {f"{c} · {curtos[b]}": c for b, c in bancos.items()}
@@ -219,50 +239,130 @@ with st.sidebar:
         if matrizes and not matriz_enviada:
             st.caption(f"Usando {matrizes[0][0]}, enviada junto com os arquivos.")
 
+com_sentido = lambda b: b.assign(**{"Entrada/Saída": b["Valor"].map(
+    lambda v: "Entrada" if v > 0 else "Saída" if v < 0 else "")})[
+    list(b.columns[:1]) + ["Entrada/Saída"] + list(b.columns[1:])]
+lida = base
 if matriz:
-    base = classificar(base, matriz_df, codigos)
-    prontos = ((base["Débito"] != "") & (base["Crédito"] != "")).sum()
+    base = classificar(lida, matriz_df, codigos)
     achados = (base["Conta na matriz"] != "").sum()
     if not any(codigos.values()):
         st.warning(f"A matriz achou a conta de {achados} de {len(base)} lançamentos. Preencha o "
                    "código de cada conta na barra lateral para completar o lado do banco.")
     else:
-        st.info(f"{prontos} de {len(base)} lançamentos com débito e crédito. "
-                "O motivo dos outros está na coluna Conferir.")
+        resumo = st.empty()   # preenchido depois das correções feitas na tabela
 else:
     st.info("Envie a planilha matriz para preencher débito, crédito e histórico.")
+base = com_sentido(base)
 
-base.insert(base.columns.get_loc("Data"), "Entrada/Saída",
-            base["Valor"].map(lambda v: "Entrada" if v > 0 else "Saída" if v < 0 else ""))
+# Correções feitas na tabela: guardadas por lançamento, para não sumirem ao trocar o filtro
+classificada = base.copy()
+assinatura = hash((tuple((n, len(c)) for n, c in arquivos), VERSAO))
+correcoes = st.session_state.setdefault("correcoes", {}).setdefault(assinatura, {})
+EDITAVEIS = ["Débito", "Crédito", "Histórico"]
 
-# Filtros da tabela
-f_contas, f_tipo, f_situacao, f_busca = st.columns([3, 1.3, 1.5, 2.5])
-filtro = f_contas.multiselect("Contas", contas, default=contas)
-tipo = f_tipo.selectbox("Entrada/Saída", ["Todas", "Entrada", "Saída"])
-situacao = f_situacao.selectbox("Classificação", ["Todos", "Com débito e crédito", "A conferir"])
-busca = f_busca.text_input("Buscar", placeholder="fornecedor, histórico, conta, valor...")
-vista = base[base["Banco/Conta"].isin(filtro) & (tipo == "Todas" or base["Entrada/Saída"] == tipo)]
-completo = (vista["Débito"] != "") & (vista["Crédito"] != "")
-if situacao == "Com débito e crédito":
-    vista = vista[completo]
-elif situacao == "A conferir":
-    vista = vista[~completo]
-if busca.strip():
-    texto = vista.astype(str).apply(" ".join, axis=1).str.lower()
-    vista = vista[texto.str.contains(busca.strip().lower(), regex=False)]
-st.caption(f"{len(vista)} de {len(base)} lançamentos na tabela.")
-extras = [c for c in ("Conta na matriz", "Conferir") if c in base]
-colunas_vista = COLUNAS_BASE[:1] + ["Entrada/Saída"] + COLUNAS_BASE[1:] + extras
-# Linhas sem débito ou crédito em amarelo-claro, para achar o que falta conferir
-amarelo = lambda linha: ["background-color:#FFF6C7" if not (linha["Débito"] and linha["Crédito"])
-                         else ""] * len(linha)
-editada = st.data_editor(
-    vista[colunas_vista].style.apply(amarelo, axis=1), hide_index=True, width="stretch", height=600,
-    disabled=["Banco/Conta", "Data", "Descrição", "Valor", "Entrada/Saída"] + extras,
-    column_config={"Data": st.column_config.DateColumn(format="DD/MM/YYYY"),
-                   "Valor": st.column_config.NumberColumn(format="%.2f")},
-)
-base.loc[vista.index, ["Débito", "Crédito", "Histórico"]] = editada[["Débito", "Crédito", "Histórico"]].values
 
-st.download_button("Baixar planilha base (.xlsx)", para_excel(base), "planilha_base.xlsx",
-                   "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+def corrigir(b):
+    for i, valores in correcoes.items():
+        if i in b.index:
+            b.loc[i, EDITAVEIS] = valores
+    return b
+
+
+base = corrigir(base)
+# O que foi corrigido vira linha nova da matriz, e já vale para os lançamentos iguais
+novas = linhas_novas_da_matriz(classificada, base, matriz_df) if matriz else None
+if novas is not None and len(novas):
+    base = corrigir(com_sentido(classificar(lida, matriz_mais(matriz_df, novas), codigos)))
+if matriz and any(codigos.values()):
+    prontos = ((base["Débito"] != "") & (base["Crédito"] != "")).sum()
+    resumo.info(f"{prontos} de {len(base)} lançamentos com débito e crédito. "
+                "O motivo dos outros está na coluna Conferir.")
+
+XLSX = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+aba_base, aba_matriz = st.tabs(["Planilha base", "Planilha matriz"])
+
+with aba_matriz:
+    if not matriz:
+        st.info("Envie a planilha matriz junto com os arquivos ou na barra lateral.")
+    else:
+        st.caption("Consulte e altere a matriz aqui: a planilha base é reclassificada na hora. "
+                   "Para incluir uma linha, use a última linha vazia da tabela; para procurar, "
+                   "a lupa no canto da tabela.")
+        st.data_editor(
+            tabela_original, key=chave_editor, num_rows="dynamic", hide_index=True,
+            width="stretch", height=560,
+            column_config={
+                "Tabela": st.column_config.SelectboxColumn(
+                    options=TABELAS, required=True, width="small",
+                    help="Receita só vale para entradas e Despesa só para saídas; Participante "
+                         "vale para os dois. Banco é a conta contábil de cada banco."),
+                "Descrição": st.column_config.TextColumn(width="large"),
+                "Conta": st.column_config.TextColumn("Conta contábil", width="small")})
+        if novas is not None and len(novas):
+            st.markdown(f"**Linhas novas, das correções na planilha base ({len(novas)})**")
+            st.dataframe(tabela_mais(tabela_original.iloc[:0], novas), hide_index=True,
+                         width="stretch")
+        nome_matriz = matriz_enviada.name if matriz_enviada else matrizes[0][0]
+        st.download_button("Baixar planilha matriz (.xlsx)",
+                           matriz_para_excel(tabela_mais(tabela_matriz, novas)
+                                             if novas is not None and len(novas) else tabela_matriz,
+                                             matriz),
+                           nome_matriz.rsplit(".", 1)[0] + ".xlsx", XLSX, type="primary",
+                           help="Com as alterações feitas aqui e as correções da planilha base. "
+                                "Substitua a matriz da empresa por esta.")
+
+with aba_base:
+    # Filtros da tabela
+    nomes_contas = {curtos[c]: c for c in contas}
+    if len(nomes_contas) < len(contas):   # nomes curtos repetidos: usa o nome inteiro
+        nomes_contas = {c: c for c in contas}
+    f_banco, f_periodo, f_tipo, f_situacao, f_busca = st.columns([2.2, 2, 1.2, 1.6, 2.2])
+    banco_visto = f_banco.selectbox("Banco/Conta", ["Todos"] + list(nomes_contas))
+    datas = pd.to_datetime(base["Data"])
+    periodo = f_periodo.date_input("Período", (datas.min().date(), datas.max().date()),
+                                   format="DD/MM/YYYY")
+    tipo = f_tipo.selectbox("Entrada/Saída", ["Todas", "Entrada", "Saída"])
+    situacao = f_situacao.selectbox("Classificação", ["Todos", "Com débito e crédito", "A conferir"])
+    busca = f_busca.text_input("Buscar", placeholder="fornecedor, histórico, conta, valor...")
+    vista = base
+    if banco_visto != "Todos":
+        vista = vista[vista["Banco/Conta"] == nomes_contas[banco_visto]]
+    if len(periodo) == 2:
+        dias = pd.to_datetime(vista["Data"]).dt.date
+        vista = vista[(dias >= periodo[0]) & (dias <= periodo[1])]
+    if tipo != "Todas":
+        vista = vista[vista["Entrada/Saída"] == tipo]
+    completo = (vista["Débito"] != "") & (vista["Crédito"] != "")
+    if situacao == "Com débito e crédito":
+        vista = vista[completo]
+    elif situacao == "A conferir":
+        vista = vista[~completo]
+    if busca.strip():
+        texto_linha = vista.astype(str).apply(" ".join, axis=1).str.lower()
+        vista = vista[texto_linha.str.contains(busca.strip().lower(), regex=False)]
+    st.caption(f"{len(vista)} de {len(base)} lançamentos na tabela.")
+    extras = [c for c in ("Conta na matriz", "Conferir") if c in base]
+    colunas_vista = COLUNAS_BASE[:1] + ["Entrada/Saída"] + COLUNAS_BASE[1:] + extras
+    # Linhas sem débito ou crédito em amarelo-claro, para achar o que falta conferir
+    amarelo = lambda linha: ["background-color:#FFF6C7" if not (linha["Débito"] and linha["Crédito"])
+                             else ""] * len(linha)
+    editada = st.data_editor(
+        vista[colunas_vista].style.apply(amarelo, axis=1), hide_index=True, width="stretch",
+        height=600, disabled=["Banco/Conta", "Data", "Descrição", "Valor", "Entrada/Saída"] + extras,
+        column_config={"Data": st.column_config.DateColumn(format="DD/MM/YYYY"),
+                       "Valor": st.column_config.NumberColumn(format="%.2f"),
+                       "Conta na matriz": st.column_config.TextColumn(
+                           help="Linha da matriz usada para a conta do fornecedor ou cliente. "
+                                "Se estiver errada, corrija na aba Planilha matriz.")})
+    editada.index = vista.index
+    texto = lambda df: df[EDITAVEIS].fillna("").astype(str).apply(lambda c: c.str.strip())
+    mudou = (texto(editada) != texto(base.loc[vista.index])).any(axis=1)
+    mudou = list(mudou[mudou].index)
+    if mudou:
+        for i in mudou:
+            correcoes[i] = list(texto(editada).loc[i])
+        st.rerun()
+
+    st.download_button("Baixar planilha base (.xlsx)", para_excel(base), "planilha_base.xlsx", XLSX,
+                       help="Com filtro em todas as colunas.")
