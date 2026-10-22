@@ -14,7 +14,7 @@ import streamlit as st
 # Depois de uma atualização, o Streamlit Cloud recarrega este arquivo mas mantém na
 # memória a versão antiga dos outros módulos (a leitura continua a de antes até alguém
 # reiniciar o app). Recarregá-los aqui evita isso.
-for _modulo in ("financeiro", "leitores_pdf", "importacao", "classificacao"):   # nessa ordem
+for _modulo in ("financeiro", "leitores_pdf", "importacao", "classificacao", "razao"):   # nessa ordem
     if _modulo in sys.modules:
         importlib.reload(sys.modules[_modulo])
 
@@ -22,6 +22,7 @@ from classificacao import (TABELAS, a_classificar, classificar, codigos_na_matri
                            matriz_da_tabela, matriz_mais, matriz_para_excel, parece_matriz,
                            parece_planilha_base, tabela_da_matriz, tabela_mais)
 from importacao import COLUNAS_BASE, eh_cartao, importar, para_excel
+from razao import Razao, ler_razao, parece_razao
 
 st.set_page_config(page_title="Patrio · Planilha base APP", layout="wide")
 # Cabeçalho no visual da Patrio (cores em .streamlit/config.toml). O topo da página fica
@@ -38,7 +39,8 @@ st.markdown("""<style>
 <small>Patrio · contabilidade também é estratégia</small></div>""", unsafe_allow_html=True)
 
 enviados = st.file_uploader(
-    "Arquivos do banco e do cliente (zip, OFX, PDF, CSV ou Excel), com a planilha matriz. "
+    "Arquivos do banco e do cliente (zip, OFX, PDF, CSV ou Excel), com a planilha matriz e, se "
+    "tiver, o razão do Domínio. "
     "Tudo é lido na memória e descartado ao fechar a página.", accept_multiple_files=True,
     type=["zip", "ofx", "pdf", "csv", "txt", "xlsx", "xls", "excel", "htm", "html"])
 if not enviados:
@@ -47,7 +49,8 @@ if not enviados:
 # Versão do código de leitura: entra na chave do cache, senão, depois de uma atualização,
 # os mesmos arquivos continuam com a leitura antiga guardada
 VERSAO = hash(tuple(open(os.path.join(os.path.dirname(os.path.abspath(__file__)), m), "rb").read()
-                    for m in ("financeiro.py", "leitores_pdf.py", "importacao.py", "classificacao.py")))
+                    for m in ("financeiro.py", "leitores_pdf.py", "importacao.py", "classificacao.py",
+                              "razao.py")))
 
 
 @st.cache_data(show_spinner="Lendo os arquivos...", max_entries=3)
@@ -58,6 +61,11 @@ def ler(arquivos, ajustes, versao):
 @st.cache_data(max_entries=3)
 def matriz_lida(conteudo, versao):
     return tabela_da_matriz(io.BytesIO(conteudo)), codigos_na_matriz(io.BytesIO(conteudo))
+
+
+@st.cache_resource(show_spinner="Lendo o razão...", max_entries=2)
+def razao_lido(conteudo, versao):
+    return Razao(*ler_razao(conteudo))
 
 
 def aplicar_edicoes(tabela, vista, estado, nova_tabela="Participante"):
@@ -90,6 +98,10 @@ arquivos = [(f.name, f.getvalue()) for f in enviados]
 # A matriz enviada junto com os extratos vai para a classificação, não para a leitura
 matrizes = [a for a in arquivos if parece_matriz(*a)]
 arquivos = [a for a in arquivos if a not in matrizes]
+# O razão do Domínio também não é extrato: dá as sugestões de conta
+razoes = [a for a in arquivos if parece_razao(*a)]
+arquivos = [a for a in arquivos if a not in razoes]
+razao = razao_lido(razoes[0][1], VERSAO) if razoes else None
 # Uma planilha base baixada daqui não é extrato: lida de novo, duplicaria tudo
 for nome, conteudo in [a for a in arquivos if parece_planilha_base(*a)]:
     st.warning(f"{nome} é uma planilha base gerada por este app e foi ignorada. "
@@ -288,6 +300,12 @@ XLSX = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 # Lançamentos ainda sem a conta do fornecedor/cliente, juntados pelo nome
 do_cliente = [n for info in layouts.values() for n in info["arquivos"]]
 pendentes = a_classificar(base, do_cliente) if matriz else None
+if pendentes is not None and razao is not None:
+    sugeridas = [razao.sugerir(e, s == "Entrada")
+                 for e, s in zip(pendentes["Exemplo"], pendentes["Entrada/Saída"])]
+    pendentes["Sugestão"] = [c or "" for c, _ in sugeridas]
+    pendentes["Conta sugerida"] = [f"{c} · {razao.nome(c)}" if c else "" for c, _ in sugeridas]
+    pendentes["Usar"] = False
 # Com key, a aba aberta continua a mesma depois de classificar (o app roda de novo)
 aba_base, aba_matriz, aba_classificar = st.tabs(
     ["Planilha base", "Planilha matriz", "A classificar"], key="aba", on_change="rerun")
@@ -381,15 +399,22 @@ with aba_classificar:
             texto_p = (vista_p["Descrição"] + " " + vista_p["Exemplo"]).str.lower()
             vista_p = vista_p[texto_p.str.contains(p_busca.strip().lower(), regex=False)]
         st.caption(f"{len(vista_p)} nomes, {int(vista_p['Lançamentos'].sum())} lançamentos sem a "
-                   "conta do fornecedor ou cliente. Digite a conta contábil: a linha entra na "
-                   "planilha matriz e os lançamentos já são classificados. Ajuste a descrição "
-                   "se quiser gravar outro nome.")
+                   "conta do fornecedor ou cliente. Digite a conta contábil"
+                   + (" ou marque Usar para aceitar a sugestão do razão" if razao else "")
+                   + ": a linha entra na planilha matriz e os lançamentos já são classificados. "
+                   "Ajuste a descrição se quiser gravar outro nome.")
+        if razao is None:
+            st.caption("Envie também o razão do Domínio para receber sugestões de conta.")
+        colunas_p = ["Descrição", "Conta", "Tabela", "Entrada/Saída", "Lançamentos", "Valor",
+                     "Exemplo"]
+        if razao is not None:
+            colunas_p[2:2] = ["Usar", "Conta sugerida"]
         editada_p = st.data_editor(
             vista_p, key=f"pendentes {chave_matriz} {estado_matriz['versao']} {p_sentido} {p_busca}",
             hide_index=True, width="stretch", height=min(520, 35 * (len(vista_p) + 2)),
-            column_order=["Descrição", "Conta", "Tabela", "Entrada/Saída", "Lançamentos", "Valor",
-                          "Exemplo"],
-            disabled=["Entrada/Saída", "Lançamentos", "Valor", "Exemplo"],
+            column_order=colunas_p,
+            disabled=["Entrada/Saída", "Lançamentos", "Valor", "Exemplo", "Sugestão",
+                      "Conta sugerida"],
             column_config={
                 "Descrição": st.column_config.TextColumn("Descrição na matriz", width="medium",
                                                          help="O nome que vai para a matriz."),
@@ -399,7 +424,17 @@ with aba_classificar:
                     options=TABELAS[:3], width="small",
                     help="Receita só vale para entradas e Despesa só para saídas; "
                          "Participante vale para os dois."),
-                "Conta": st.column_config.TextColumn("Conta contábil", width="small")})
+                "Conta": st.column_config.TextColumn("Conta", width="small",
+                                                     help="Conta contábil (código reduzido)."),
+                "Usar": st.column_config.CheckboxColumn(
+                    width="small", help="Classifica com a conta sugerida pelo razão."),
+                "Conta sugerida": st.column_config.TextColumn(
+                    "Sugestão do razão", width="medium",
+                    help="Pelo nome no plano de contas ou pela conta usada nos históricos "
+                         "parecidos do razão.")})
+        if "Usar" in editada_p:
+            vazia = editada_p["Conta"].fillna("").astype(str).str.strip() == ""
+            editada_p.loc[editada_p["Usar"] & vazia, "Conta"] = editada_p["Sugestão"]
         prontas_p = editada_p[editada_p["Conta"].fillna("").astype(str).str.strip() != ""]
         prontas_p = prontas_p[prontas_p["Descrição"].fillna("").astype(str).str.strip() != ""]
         if len(prontas_p):

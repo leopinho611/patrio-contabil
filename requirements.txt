@@ -3,3 +3,4 @@ pandas
 openpyxl
 pypdf>=5.0
 lxml
+python-calamine
