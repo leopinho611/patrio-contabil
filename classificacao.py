@@ -395,6 +395,44 @@ def nome_para_matriz(descricao):
     return d
 
 
+def _nome_sugerido(descricao, pelo_fornecedor):
+    """Nome a gravar na matriz para um lançamento ainda sem conta. Planilha do cliente: o
+    fornecedor/cliente (primeira parte do histórico), salvo banco ou financeira, que vai
+    pela descrição do que foi (tarifa, IOF...). Extrato: o nome no fim do histórico."""
+    if pelo_fornecedor:
+        partes = [p.strip() for p in str(descricao).split(" - ")]
+        partes = [p for p in partes if p and not re.fullmatch(r"[\d./-]+", p)]
+        for parte in partes:
+            if not eh_instituicao_financeira(parte):
+                return parte
+    return nome_para_matriz(descricao)
+
+
+def a_classificar(base, arquivos_do_cliente=()):
+    """Lançamentos sem a conta do fornecedor/cliente, juntados pelo nome a gravar na matriz:
+    DataFrame com Descrição, Entrada/Saída, Lançamentos, Valor, Exemplo, Tabela e Conta."""
+    colunas = ["Descrição", "Entrada/Saída", "Lançamentos", "Valor", "Exemplo", "Tabela", "Conta"]
+    if base is None or base.empty or "Conta na matriz" not in base:
+        return pd.DataFrame(columns=colunas)
+    entrada = base["Valor"] > 0
+    lado = base["Crédito"].where(entrada, base["Débito"]).fillna("").astype(str).str.strip()
+    falta = ((lado == "") & (base["Valor"] != 0) & (base["Conta na matriz"] != NAO_IMPORTAR)
+             & ~base["Conferir"].str.contains("código da aplicação", regex=False))
+    f = base[falta]
+    if f.empty:
+        return pd.DataFrame(columns=colunas)
+    do_cliente = f["Arquivo"].isin(set(arquivos_do_cliente)) if "Arquivo" in f else [False] * len(f)
+    f = f.assign(_nome=[_nome_sugerido(d, c) for d, c in zip(f["Descrição"], do_cliente)],
+                 _sentido=entrada[falta].map({True: "Entrada", False: "Saída"}))
+    g = f.groupby(["_nome", "_sentido"], sort=False).agg(
+        Lançamentos=("Valor", "size"), Valor=("Valor", "sum"), Exemplo=("Descrição", "first"))
+    g = g.reset_index().rename(columns={"_nome": "Descrição", "_sentido": "Entrada/Saída"})
+    g["Tabela"] = g["Entrada/Saída"].map({"Entrada": "Receita", "Saída": "Despesa"})
+    g["Conta"] = ""
+    return g.sort_values(["Lançamentos", "Descrição"], ascending=[False, True])[colunas] \
+        .reset_index(drop=True)
+
+
 def linhas_novas_da_matriz(classificada, corrigida, matriz):
     """Lançamentos em que a conta do fornecedor/cliente foi corrigida ou preenchida à mão e
     que a matriz ainda não conhece: DataFrame com Descrição, Conta e Entrada (bool)."""

@@ -237,3 +237,29 @@ def test_linha_de_receita_nao_vale_para_saida():
     r = classificar(_base([(CC, "PIX ENVIADO CLIENTE ALFA", -10.0),
                            (CC, "PIX RECEBIDO CLIENTE ALFA", 10.0)]), m, CODIGOS)
     assert list(r["Débito"]) == ["", "100"] and list(r["Crédito"]) == ["100", "557"]
+
+
+def test_a_classificar_junta_pelo_fornecedor_e_some_ao_entrar_na_matriz():
+    from classificacao import a_classificar, matriz_da_tabela
+    base = pd.DataFrame({
+        "Banco/Conta": "BANCO GAMA", "Data": "2026-04-06",
+        "Descrição": ["PADARIA AURORA - 12345678000199 - ALIMENTAÇÃO",
+                      "PADARIA AURORA - 12345678000199 - ALIMENTAÇÃO",
+                      "FINANCEIRA DELTA S.A. - 98765432000155 - IOF",
+                      "PIX RECEBIDO - CLIENTE ALFA"],
+        "Valor": [-10.0, -20.0, -1.5, 300.0], "Débito": "", "Crédito": "", "Histórico": "",
+        "Arquivo": ["financeiro.csv"] * 3 + ["extrato.ofx"]})
+    tabela = pd.DataFrame({"Tabela": ["Participante"], "Descrição": ["GRAFICA BETA"],
+                           "Conta": ["500"]})
+    feita = classificar(base, matriz_da_tabela(tabela)[0], {"BANCO GAMA": "10"})
+    p = a_classificar(feita, ["financeiro.csv"])
+    linhas = {(d, s): (n, t) for d, s, n, t in
+              zip(p["Descrição"], p["Entrada/Saída"], p["Lançamentos"], p["Tabela"])}
+    assert linhas == {("PADARIA AURORA", "Saída"): (2, "Despesa"),
+                      ("IOF", "Saída"): (1, "Despesa"),            # financeira: pelo que foi
+                      ("CLIENTE ALFA", "Entrada"): (1, "Receita")}  # extrato: nome no fim
+    tabela = pd.concat([tabela, pd.DataFrame({"Tabela": ["Despesa"],
+                                              "Descrição": ["PADARIA AURORA"], "Conta": ["700"]})])
+    feita = classificar(base, matriz_da_tabela(tabela.reset_index(drop=True))[0], {"BANCO GAMA": "10"})
+    assert list(feita["Débito"][:2]) == ["700", "700"]
+    assert "PADARIA AURORA" not in set(a_classificar(feita, ["financeiro.csv"])["Descrição"])
